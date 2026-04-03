@@ -1,0 +1,30 @@
+# Environment
+.env
+
+# Data (PDFs stored locally, not committed)
+data/
+
+# Qdrant persistent storage
+qdrant_storage/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+*.egg-info/
+
+# Node
+node_modules/
+dist/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project-specific
+nextsteps.md
