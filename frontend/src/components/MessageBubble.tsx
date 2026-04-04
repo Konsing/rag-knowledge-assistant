@@ -1,4 +1,5 @@
 import { useState } from "react";
+import Markdown from "react-markdown";
 import type { SourceChunk } from "../api/client";
 
 interface Message {
@@ -22,7 +23,9 @@ export default function MessageBubble({ message }: { message: Message }) {
       {/* AI answer */}
       <div className="flex justify-start">
         <div className="bg-white border border-gray-200 rounded-2xl rounded-bl-sm px-4 py-3 max-w-[80%] shadow-sm">
-          <p className="text-gray-800 whitespace-pre-wrap">{message.answer}</p>
+          <div className="text-gray-800 prose prose-sm max-w-none prose-p:my-1 prose-li:my-0.5 prose-headings:mt-3 prose-headings:mb-1">
+            <Markdown>{message.answer}</Markdown>
+          </div>
 
           {message.sources.length > 0 && (
             <button
