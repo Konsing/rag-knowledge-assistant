@@ -240,39 +240,37 @@ You don't need to manually find and ingest anything. Just ask a question and the
 
 I asked Claude Code: **"Research what transformer attention mechanisms are and how they work"**
 
-Behind the scenes, the `research_papers` tool:
-1. Searched ArXiv and found 3 relevant papers
-2. Downloaded and ingested all 3 with section-aware chunking (99 total chunks)
-3. Queried the enriched knowledge base and generated a cited answer
+The `research_papers` tool automatically searched ArXiv, found 3 relevant papers, downloaded and ingested all of them, then answered the question — all in a single tool call:
 
 ```
-Papers ingested:
+Papers found and ingested:
   - Dilated Neighborhood Attention Transformer (2209.15001) — 30 chunks
   - Transformer-based Personalized Attention Mechanism (2206.03003) — 41 chunks
   - Mask-Attention-Free Transformer for 3D Instance Segmentation (2309.01692) — 28 chunks
 ```
 
-**Answer returned:**
+**Cited answer returned:**
 
-> Transformer attention mechanisms are designed to model relationships between components
-> of input data, leveraging a framework that includes self-attention and cross-attention.
+> Transformer attention mechanisms are techniques used within the Transformer architecture
+> that allow the model to focus on different parts of the input data when making predictions.
+> They calculate attention weights which indicate the relevance of each part of the input
+> to the output, facilitating the understanding of relationships within the data.
 >
-> 1. **Self-Attention**: This mechanism allows the model to weigh the importance of different
->    parts of a single sequence of data. In NLP, it calculates the relevance of words within
->    a sentence to create contextual representations. In images, it similarly computes
->    attention weights between various image patches [3].
+> 1. **Exploratory Attention**: Derived from parts of the pathological specimen that need to
+>    be observed. It helps in identifying which specific sections of the image are important
+>    for diagnosis.
 >
-> 2. **Cross-Attention**: This type of attention lets the model adjust attention weights based
->    on the interaction between different modalities, such as linking features from images to
->    information in clinical records [3].
+> 2. **Explanatory Attention**: Relates to the classification subtypes of the specimens,
+>    providing context about how different features contribute to the overall classification.
 >
-> 3. **Dilated Neighborhood Attention (DiNA)**: An extension that allows for longer-range
->    relationships by adjusting the step size, operating effectively in conjunction with
->    local-only attention to cover both global and local contexts [2][5].
+> The Transformer utilizes a mechanism that can compute these attention weights for each part
+> of the input, allowing it to handle multimodal information. For instance, it can assess
+> relationships between image patches and clinical records, enhancing personalized attention
+> based on clinical data [1][5].
 >
-> *Sources: 2206.03003.pdf p.5, 2209.15001.pdf p.7, 2309.01692.pdf p.2 — scores 0.49–0.59*
+> *Sources: 2206.03003.pdf p.5 (score 0.59), 2209.15001.pdf p.7 (score 0.53), 2309.01692.pdf p.2 (score 0.52)*
 
-The entire flow — search, download, chunk, embed, store, retrieve, generate — happened in a single tool call. The 99 ingested chunks now persist in the knowledge base, so future questions about attention mechanisms are answered instantly without re-downloading anything.
+The entire flow — ArXiv search, PDF download, section-aware chunking, embedding, Qdrant storage, retrieval, LLM generation — happened in a single tool call. The 99 ingested chunks now persist in the knowledge base, so future questions about attention mechanisms are answered instantly without re-downloading anything.
 
 ### Other MCP tool examples
 
