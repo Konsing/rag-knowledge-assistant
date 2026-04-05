@@ -10,7 +10,7 @@ import xml.etree.ElementTree as ET
 
 import httpx
 
-ARXIV_API_URL = "http://export.arxiv.org/api/query"
+ARXIV_API_URL = "https://export.arxiv.org/api/query"
 
 
 def _extract_arxiv_id(entry_id: str) -> str:
@@ -34,7 +34,7 @@ async def search_arxiv(query: str, max_results: int = 3) -> list[dict]:
         "sortOrder": "descending",
     }
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
         response = await client.get(ARXIV_API_URL, params=params)
         response.raise_for_status()
 
