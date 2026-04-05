@@ -4,7 +4,9 @@ A production-quality Retrieval-Augmented Generation system built **from scratch*
 
 ## What It Does
 
-Upload documents — ArXiv papers, PDFs, web pages, or text files — and ask questions about them. The system retrieves relevant passages using vector similarity search and generates cited answers using an LLM (OpenAI or Claude, configurable). Also available as an **MCP server** so AI assistants like Claude Code can query your knowledge base directly.
+Upload documents — ArXiv papers, PDFs, web pages, or text files — and ask questions about them. The system retrieves relevant passages using vector similarity search and generates cited answers using an LLM (OpenAI or Claude, configurable).
+
+Also available as an **MCP server** with auto-research tools — AI assistants like Claude Code can search ArXiv or the web, ingest relevant sources, and get cited answers without any manual document management.
 
 ### Example: Real Output
 
@@ -35,7 +37,25 @@ I ingested [this astrophysics paper about Little Red Dots and dark matter solito
 >
 > *Sources: 2601.00044.pdf, p.10 — "Thermodynamic Instability and Cooling" — scores 0.45*
 
-The system retrieves the relevant sections, cites them by number, and refuses to hallucinate — if the papers don't contain an answer, it says so.
+The system retrieves the relevant sections, cites them by number, and refuses to hallucinate — if the sources don't contain an answer, it says so.
+
+### Example: Web Page Ingestion
+
+I ingested the [Wikipedia article on Retrieval-augmented generation](https://en.wikipedia.org/wiki/Retrieval-augmented_generation) and queried:
+
+**Q: "What is retrieval augmented generation?"**
+
+> Retrieval-augmented generation (RAG) is a technique that enhances large language models (LLMs)
+> by enabling them to retrieve and incorporate new information from external data sources when
+> responding to user queries. Instead of relying solely on pre-existing training data, RAG allows
+> LLMs to access specific documents, databases, or web sources to supplement their responses and
+> provide more accurate and up-to-date information. This method helps reduce AI hallucinations —
+> instances where models produce incorrect or fabricated information — by grounding responses in
+> factual content [1][2][3].
+>
+> *Source: en.wikipedia.org, 10 chunks ingested, top score 0.60*
+
+The system extracted the article text from Wikipedia (stripping navigation, ads, and sidebar boilerplate using trafilatura), chunked it, and grounded its answer in the actual article content.
 
 ## Architecture
 
@@ -57,13 +77,22 @@ The system retrieves the relevant sections, cites them by number, and refuses to
 ```
 backend/
 ├── mcp_server.py     MCP server entry point (FastMCP)
+├── main.py           FastAPI entry point
 └── app/
     ├── ingestion/    PDF, ArXiv, web pages, text/markdown loading + chunking
-    ├── embedding/    sentence-transformers (all-MiniLM-L6-v2)
+    │   ├── pdf_loader.py       PyMuPDF text extraction with page tracking
+    │   ├── arxiv_fetcher.py    ArXiv PDF downloader
+    │   ├── arxiv_search.py     ArXiv API search (free, no key needed)
+    │   ├── web_loader.py       Web page fetcher (trafilatura extraction)
+    │   ├── web_search.py       DuckDuckGo search (free, no key needed)
+    │   ├── text_loader.py      Plain text / markdown loader
+    │   └── chunker.py          Section-aware + plain document chunking
+    ├── embedding/    sentence-transformers (all-MiniLM-L6-v2, 384-dim)
     ├── retrieval/    Qdrant cosine similarity search
-    ├── generation/   LLM client + prompt templates
+    ├── generation/   LLM client (OpenAI/Claude) + prompt templates
     ├── api/          FastAPI routes (thin delegation layer)
-    └── config.py     Centralized Pydantic Settings
+    ├── models.py     Shared Pydantic request/response schemas
+    └── config.py     Centralized Pydantic Settings (.env loader)
 ```
 
 ## Tech Stack
@@ -74,8 +103,10 @@ backend/
 | Embeddings | all-MiniLM-L6-v2 | 384-dim vectors, free, runs locally |
 | Vector DB | Qdrant (Docker) | Free local mode, excellent SDK, metadata filtering |
 | Web Scraping | trafilatura | Extracts article text, strips boilerplate automatically |
+| Web Search | DuckDuckGo (duckduckgo-search) | Free, no API key, used by auto-research |
+| Academic Search | ArXiv API | Free, no API key, relevance-sorted paper search |
 | MCP Server | FastMCP (MCP SDK) | Exposes RAG as tools for AI assistants |
-| LLM | OpenAI GPT-4o-mini / Claude | Configurable; strong instruction-following for citations |
+| LLM | OpenAI GPT-4o-mini / Claude Sonnet | Configurable; strong instruction-following for citations |
 | Backend | FastAPI | Async, auto OpenAPI docs, Pydantic integration |
 | Frontend | React + Vite + Tailwind | Fast dev, modern stack |
 
@@ -110,36 +141,19 @@ docker compose up --build
 | Source | How to ingest | Chunking strategy |
 |--------|---------------|-------------------|
 | ArXiv papers | Paste URL in UI or API (`arxiv_url` field) | Section-aware (detects numbered sections, ALL-CAPS headers), strips references |
-| PDF files | Upload in UI or API (`file` field) | Same as ArXiv ��� section-aware with page tracking |
+| PDF files | Upload in UI or API (`file` field) | Same as ArXiv — section-aware with page tracking |
 | Web pages | Paste URL in UI or API (`url` field) | Markdown heading detection, paragraph fallback |
 | Text files (.txt) | Upload in UI or API | Paragraph-based splitting |
 | Markdown files (.md) | Upload in UI or API | Markdown heading detection (`#`, `##`, `###`) |
 
-All sources go through the same pipeline after chunking: embed locally with sentence-transformers → store in Qdrant → available for retrieval. Embedding and storage are always free.
-
-### Example: Web page ingestion
-
-I ingested the [Wikipedia article on Retrieval-augmented generation](https://en.wikipedia.org/wiki/Retrieval-augmented_generation) and queried:
-
-**Q: "What is retrieval augmented generation?"**
-
-> Retrieval-augmented generation (RAG) is a technique that enhances large language models (LLMs)
-> by enabling them to retrieve and incorporate new information from external data sources when
-> responding to user queries. Instead of relying solely on pre-existing training data, RAG allows
-> LLMs to access specific documents, databases, or web sources to supplement their responses and
-> provide more accurate and up-to-date information. This method helps reduce AI hallucinations —
-> instances where models produce incorrect or fabricated information — by grounding responses in
-> factual content [1][2][3].
->
-> *Source: en.wikipedia.org, 10 chunks ingested, top score 0.60*
-
-The system extracted the article text from Wikipedia (stripping navigation, ads, and sidebar boilerplate using trafilatura), chunked it, and grounded its answer in the actual article content.
+All sources go through the same pipeline after chunking: embed locally with sentence-transformers → store in Qdrant → available for retrieval. Embedding and storage are always free — only LLM answer generation costs anything (~$0.0005/query).
 
 ## API Endpoints
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `GET` | `/api/health` | Health check |
+| `GET` | `/api/stats` | Collection stats (chunk count) |
 | `POST` | `/api/ingest` | Upload file (PDF/txt/md), ArXiv URL, or web URL |
 | `POST` | `/api/query` | Ask a question, get cited answer |
 
@@ -177,7 +191,7 @@ The RAG pipeline is also available as an [MCP (Model Context Protocol)](https://
 
 ### How it works
 
-The MCP server runs as a separate Docker service that imports the same backend modules directly. When Claude Code calls a tool like `query_knowledge_base`, the MCP server embeds the question, searches Qdrant, and generates a cited answer — identical to what the React UI does.
+The MCP server runs as a separate Docker service that imports the same backend modules directly. When Claude Code calls a tool like `research_papers`, the MCP server searches ArXiv, downloads relevant papers, chunks and embeds them, stores them in Qdrant, and generates a cited answer — all in a single tool call. The knowledge base grows automatically with each research query.
 
 ### Setup
 
@@ -220,7 +234,7 @@ The two `research` tools are the most powerful — they combine search, ingestio
 
 You don't need to manually find and ingest anything. Just ask a question and the right tool handles everything. All ingested content persists in the knowledge base, so future queries on the same topic are instant.
 
-I designed `search_chunks` as a free alternative to `query_knowledge_base` — it returns raw document chunks without calling the LLM, so the AI assistant can decide whether it needs a full generated answer or just wants to look up a fact.
+`search_chunks` is a free alternative to `query_knowledge_base` — it returns raw document chunks without calling the LLM, so the AI assistant can decide whether it needs a full generated answer or just wants to look up a fact.
 
 ### Example: Using MCP tools in Claude Code
 
@@ -258,42 +272,41 @@ This requires Qdrant running locally and Python dependencies installed on the ho
 ```
 rag-knowledge-assistant/
 ├── docker-compose.yml          Orchestrates all services (Qdrant, backend, frontend, MCP)
+├── .env.example                Environment variables template
 ├── .mcp.json                   Claude Code MCP server configuration
 ├── backend/
 │   ├── Dockerfile
 │   ├── requirements.txt
 │   ├── main.py                 FastAPI entry point
-│   ├── mcp_server.py           MCP server entry point
+│   ├── mcp_server.py           MCP server entry point (7 tools)
 │   └── app/
 │       ├── config.py           Pydantic Settings (.env loader)
 │       ├── models.py           Shared request/response schemas
 │       ├── ingestion/          PDF, ArXiv, web, text/markdown loading + chunking
-│       ├── embedding/          Vector encoding
-│       ├── retrieval/          Similarity search
-│       ├── generation/         LLM + prompts
+│       │   ├── pdf_loader.py       PyMuPDF text extraction
+│       │   ├── arxiv_fetcher.py    ArXiv PDF downloader
+│       │   ├── arxiv_search.py     ArXiv API search
+│       │   ├── web_loader.py       Web page fetcher (trafilatura)
+│       │   ├── web_search.py       DuckDuckGo search
+│       │   ├── text_loader.py      Plain text / markdown loader
+│       │   └── chunker.py          Section-aware + plain chunking
+│       ├── embedding/          Vector encoding (sentence-transformers)
+│       ├── retrieval/          Qdrant cosine similarity search
+│       ├── generation/         LLM client + prompt templates
 │       └── api/                Route handlers
 ├── frontend/
 │   ├── Dockerfile
-│   └── src/                    React + Tailwind UI
+│   └── src/
+│       ├── App.tsx             Main layout (sidebar + chat)
+│       ├── api/client.ts       API client (ingest, query, stats)
+│       └── components/
+│           ├── ChatWindow.tsx   Chat interface with markdown rendering
+│           ├── IngestPanel.tsx   Document ingestion sidebar
+│           └── MessageBubble.tsx Individual message display
 ├── eval/
-│   └── eval_retrieval.py       Retrieval quality evaluation
+│   └── eval_retrieval.py       Retrieval quality evaluation (10 test questions)
 └── data/                       Local document storage (gitignored)
 ```
-
-## Build Phases
-
-| Phase | Focus | Status |
-|-------|-------|--------|
-| 1 | Project scaffold + Docker setup | Done |
-| 2 | Ingestion pipeline (PDF + chunking) | Done |
-| 3 | Embedding + Qdrant vector storage | Done |
-| 4 | Retrieval engine (cosine similarity) | Done |
-| 5 | Generation layer (Claude + citations) | Done |
-| 6 | FastAPI endpoints (full implementation) | Done |
-| 7 | React chat UI with source citations | Done |
-| 8 | Evaluation script (precision scoring) | Done |
-| 9 | MCP server (AI assistant integration) | Done |
-| 10 | Broader search (web pages, text, markdown) | Done |
 
 ## What Would Change in Production
 
@@ -314,7 +327,7 @@ I built every layer of this RAG system from scratch — no LangChain, no LlamaIn
 
 **Hand-rolled embedding and retrieval.** I use sentence-transformers (all-MiniLM-L6-v2) to encode chunks into 384-dimensional vectors and store them in Qdrant with full metadata payloads. The same model embeds both documents and queries — this is critical because cosine similarity only works within the same vector space. I chose cosine over euclidean distance because for text embeddings, direction matters more than magnitude.
 
-**Citation-grounded generation.** I engineered the prompt to instruct Claude to answer only from the provided context and cite sources using [1], [2] notation. Each retrieved chunk is labeled with its source file, page number, and section title. If the retrieval returns nothing relevant, the system says "I don't have enough information" rather than hallucinating — this is a deliberate design choice.
+**Citation-grounded generation.** I engineered the prompt to instruct the LLM to answer only from the provided context and cite sources using [1], [2] notation. Each retrieved chunk is labeled with its source file, page number, and section title. If the retrieval returns nothing relevant, the system says "I don't have enough information" rather than hallucinating — this is a deliberate design choice. The generation layer supports both OpenAI (GPT-4o-mini) and Claude (Sonnet), configurable via a single environment variable.
 
 **Quantitative evaluation.** I wrote an evaluation harness with 10 test questions and expected section keywords. The system achieves 70% retrieval precision — a solid baseline that identifies exactly where improvements are needed (vocabulary mismatch on generic queries). The misses informed my understanding of when reranking and query expansion become necessary.
 
