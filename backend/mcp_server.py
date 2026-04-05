@@ -15,6 +15,7 @@ import sys
 from app.embedding.embedder import embed_query, embed_texts
 from app.generation.llm_client import generate_answer
 from app.ingestion import ingest_arxiv_url, ingest_web_url
+from app.ingestion.web_search import search_web
 from app.retrieval.search import ensure_collection, get_collection_info, search, upsert_chunks
 
 # Parse args before creating FastMCP so host/port are available
@@ -153,6 +154,80 @@ async def ingest_web_page(url: str) -> dict:
         "source": source,
         "num_chunks": len(chunks),
         "message": f"Successfully ingested {len(chunks)} chunks from {url}",
+    }
+
+
+@mcp.tool()
+async def research(question: str, max_pages: int = 3, top_k: int = 5) -> dict:
+    """Automatically search the web, ingest relevant pages, and answer a question.
+
+    This is the all-in-one research tool. It:
+    1. Searches DuckDuckGo for pages relevant to your question (free)
+    2. Ingests the top results into the knowledge base (free)
+    3. Queries the enriched knowledge base for a cited answer (~$0.0005)
+
+    Use this when the knowledge base might not have information on a topic yet.
+    The ingested pages persist, so future queries on the same topic are instant.
+
+    Args:
+        question: The research question to answer
+        max_pages: Number of web pages to search and ingest (default 3, max 5)
+        top_k: Number of source chunks to retrieve for the answer (default 5)
+    """
+    max_pages = min(max_pages, 5)
+
+    # Step 1: Search the web
+    web_results = search_web(question, max_results=max_pages)
+    if not web_results:
+        return {"error": "No web results found for this query"}
+
+    # Step 2: Ingest each result
+    ingested = []
+    for result in web_results:
+        url = result["url"]
+        try:
+            chunks, source = await ingest_web_url(url)
+            if chunks:
+                vectors = embed_texts([c["text"] for c in chunks])
+                upsert_chunks(chunks, vectors)
+                ingested.append({
+                    "url": url,
+                    "title": result["title"],
+                    "chunks": len(chunks),
+                })
+        except Exception:
+            # Skip pages that fail to load — move on to the next
+            continue
+
+    if not ingested:
+        return {"error": "Could not extract text from any of the search results"}
+
+    # Step 3: Query the now-enriched knowledge base
+    query_vector = embed_query(question)
+    results = search(query_vector, top_k=top_k)
+
+    if not results:
+        return {
+            "answer": "Ingested pages but could not find relevant chunks for this specific question.",
+            "sources": [],
+            "ingested": ingested,
+        }
+
+    answer = generate_answer(question, results)
+    sources = [
+        {
+            "text": r["text"][:500],
+            "source_file": r["metadata"]["source_file"],
+            "section_title": r["metadata"]["section_title"],
+            "score": round(r["score"], 3),
+        }
+        for r in results
+    ]
+
+    return {
+        "answer": answer,
+        "sources": sources,
+        "ingested": ingested,
     }
 
 

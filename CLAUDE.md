@@ -22,7 +22,7 @@ Modular monolith — single FastAPI backend with clear module boundaries:
 
 ## MCP Server
 - Configured in `.mcp.json` for Claude Code (streamable-http on port 8811)
-- Tools: `query_knowledge_base`, `search_chunks` (free), `ingest_arxiv`, `ingest_web_page`, `get_stats`
+- Tools: `research` (auto web search + ingest + answer), `query_knowledge_base`, `search_chunks` (free), `ingest_arxiv`, `ingest_web_page`, `get_stats`
 - Shares backend modules directly — no HTTP-to-HTTP calls
 
 ## Tech Stack
