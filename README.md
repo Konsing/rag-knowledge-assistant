@@ -236,25 +236,57 @@ You don't need to manually find and ingest anything. Just ask a question and the
 
 `search_chunks` is a free alternative to `query_knowledge_base` — it returns raw document chunks without calling the LLM, so the AI assistant can decide whether it needs a full generated answer or just wants to look up a fact.
 
-### Example: Using MCP tools in Claude Code
+### Example: Auto-Research in Action
 
-Once the MCP server is running, you can ask Claude Code things like:
+I asked Claude Code: **"Research what transformer attention mechanisms are and how they work"**
 
-> "Research what transformer attention mechanisms are and how they work"
+Behind the scenes, the `research_papers` tool:
+1. Searched ArXiv and found 3 relevant papers
+2. Downloaded and ingested all 3 with section-aware chunking (99 total chunks)
+3. Queried the enriched knowledge base and generated a cited answer
 
-Claude Code will call `research_papers`, which automatically searches ArXiv for relevant papers, ingests them with section-aware chunking, and returns a cited answer — all in one step. The papers stay in the knowledge base for future queries.
+```
+Papers ingested:
+  - Dilated Neighborhood Attention Transformer (2209.15001) — 30 chunks
+  - Transformer-based Personalized Attention Mechanism (2206.03003) — 41 chunks
+  - Mask-Attention-Free Transformer for 3D Instance Segmentation (2309.01692) — 28 chunks
+```
+
+**Answer returned:**
+
+> Transformer attention mechanisms are designed to model relationships between components
+> of input data, leveraging a framework that includes self-attention and cross-attention.
+>
+> 1. **Self-Attention**: This mechanism allows the model to weigh the importance of different
+>    parts of a single sequence of data. In NLP, it calculates the relevance of words within
+>    a sentence to create contextual representations. In images, it similarly computes
+>    attention weights between various image patches [3].
+>
+> 2. **Cross-Attention**: This type of attention lets the model adjust attention weights based
+>    on the interaction between different modalities, such as linking features from images to
+>    information in clinical records [3].
+>
+> 3. **Dilated Neighborhood Attention (DiNA)**: An extension that allows for longer-range
+>    relationships by adjusting the step size, operating effectively in conjunction with
+>    local-only attention to cover both global and local contexts [2][5].
+>
+> *Sources: 2206.03003.pdf p.5, 2209.15001.pdf p.7, 2309.01692.pdf p.2 — scores 0.49–0.59*
+
+The entire flow — search, download, chunk, embed, store, retrieve, generate — happened in a single tool call. The 99 ingested chunks now persist in the knowledge base, so future questions about attention mechanisms are answered instantly without re-downloading anything.
+
+### Other MCP tool examples
 
 > "What are the latest developments in quantum computing?"
 
-Claude Code will call `research`, which searches the web via DuckDuckGo, ingests the top results, and returns a cited answer grounded in the actual page content.
+Claude Code calls `research`, which searches DuckDuckGo, ingests the top web pages, and returns a cited answer.
 
 > "Use the knowledge base to look up what retrieval augmented generation is"
 
-Claude Code will call `query_knowledge_base` and return a cited answer from already-ingested documents.
+Claude Code calls `query_knowledge_base` and returns a cited answer from already-ingested documents.
 
-> "Ingest this ArXiv paper into the knowledge base: https://arxiv.org/abs/2301.08745"
+> "Ingest this ArXiv paper: https://arxiv.org/abs/2301.08745"
 
-Claude Code will call `ingest_arxiv`, which downloads the paper, chunks it, embeds it, and stores it in Qdrant.
+Claude Code calls `ingest_arxiv`, which downloads, chunks, embeds, and stores the paper.
 
 ### Alternative: stdio transport
 
