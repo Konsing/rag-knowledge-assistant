@@ -206,14 +206,19 @@ docker compose up qdrant mcp-server
 
 | MCP Tool | What it does | Cost |
 |----------|-------------|------|
+| `research_papers` | **Auto-research**: searches ArXiv, ingests relevant papers, answers the question | ~$0.0005 |
 | `research` | **Auto-research**: searches the web, ingests relevant pages, answers the question | ~$0.0005 |
 | `query_knowledge_base` | Get a cited answer from already-ingested documents | ~$0.0005 |
 | `search_chunks` | Find relevant chunks without LLM generation | Free |
-| `ingest_arxiv` | Add an ArXiv paper to the knowledge base | Free |
+| `ingest_arxiv` | Add a specific ArXiv paper to the knowledge base | Free |
 | `ingest_web_page` | Add a web page to the knowledge base | Free |
 | `get_stats` | Check how many chunks are indexed | Free |
 
-The `research` tool is the most powerful — it combines web search (DuckDuckGo), page ingestion (trafilatura), and RAG querying into a single call. You don't need to manually find and ingest pages; just ask a question and it handles everything. Ingested pages persist in the knowledge base, so future queries on the same topic are instant.
+The two `research` tools are the most powerful — they combine search, ingestion, and RAG querying into a single call:
+- **`research_papers`** searches ArXiv for academic papers and ingests them with section-aware chunking optimized for academic content. Best for scientific and technical questions.
+- **`research`** searches DuckDuckGo for web pages and ingests them. Best for general knowledge, current events, and non-academic topics.
+
+You don't need to manually find and ingest anything. Just ask a question and the right tool handles everything. All ingested content persists in the knowledge base, so future queries on the same topic are instant.
 
 I designed `search_chunks` as a free alternative to `query_knowledge_base` — it returns raw document chunks without calling the LLM, so the AI assistant can decide whether it needs a full generated answer or just wants to look up a fact.
 
@@ -223,7 +228,11 @@ Once the MCP server is running, you can ask Claude Code things like:
 
 > "Research what transformer attention mechanisms are and how they work"
 
-Claude Code will call `research`, which automatically searches the web for relevant pages, ingests the top results, and returns a cited answer — all in one step. The ingested pages stay in the knowledge base for future queries.
+Claude Code will call `research_papers`, which automatically searches ArXiv for relevant papers, ingests them with section-aware chunking, and returns a cited answer — all in one step. The papers stay in the knowledge base for future queries.
+
+> "What are the latest developments in quantum computing?"
+
+Claude Code will call `research`, which searches the web via DuckDuckGo, ingests the top results, and returns a cited answer grounded in the actual page content.
 
 > "Use the knowledge base to look up what retrieval augmented generation is"
 
@@ -311,7 +320,9 @@ I built every layer of this RAG system from scratch — no LangChain, no LlamaIn
 
 **Architecture decisions.** I chose a modular monolith — single FastAPI service with clear module boundaries (ingestion, embedding, retrieval, generation, API). Routes are deliberately thin — they validate input and delegate to modules. All configuration flows through Pydantic BaseSettings. I chose ArXiv papers as test data intentionally: they're open access (no licensing issues), well-structured (good for learning chunking), and make the demo credible to a technical audience.
 
-**MCP server for AI assistant integration.** I wrapped the entire RAG pipeline as an MCP (Model Context Protocol) server using the FastMCP SDK. This means Claude Code or any MCP-compatible AI assistant can query my knowledge base, ingest new documents, and search for information — all as tool calls. The MCP server imports the same backend modules directly (zero code duplication), and I designed multiple tools at different cost tiers: `query_knowledge_base` (generates a full cited answer, ~$0.0005), `search_chunks` (returns raw chunks without an LLM call, completely free), and `research` (automatically searches the web, ingests the most relevant pages, and generates a cited answer — all in one call). The `research` tool is the most interesting: it uses DuckDuckGo to find relevant pages, trafilatura to extract their content, and the full RAG pipeline to generate a grounded answer. The ingested pages persist in the knowledge base, so it gets smarter over time without any manual curation.
+**MCP server for AI assistant integration.** I wrapped the entire RAG pipeline as an MCP (Model Context Protocol) server using the FastMCP SDK. This means Claude Code or any MCP-compatible AI assistant can query my knowledge base, ingest new documents, and search for information — all as tool calls. The MCP server imports the same backend modules directly (zero code duplication), and I designed multiple tools at different cost tiers: `query_knowledge_base` (generates a full cited answer, ~$0.0005), `search_chunks` (returns raw chunks without an LLM call, completely free), and two auto-research tools that combine search, ingestion, and RAG into a single call.
+
+**Auto-research tools.** I built two research tools that make the knowledge base self-expanding. `research_papers` searches ArXiv's free API for academic papers matching a question, downloads and ingests the top results with section-aware chunking optimized for academic content, then queries the enriched knowledge base for a cited answer. `research` does the same but for general web content — it searches DuckDuckGo, extracts article text with trafilatura, and ingests the results. The key insight is that ingested content persists in Qdrant, so the knowledge base grows smarter over time without manual curation. I chose to build both tools because academic papers and web pages have fundamentally different structure — ArXiv papers benefit from section-aware chunking that detects numbered headers and strips bibliographies, while web pages need boilerplate removal and markdown-style heading detection. Having two tools lets the AI assistant pick the right one based on the question type.
 
 **Broader document support.** I extended the system beyond just ArXiv papers to support web pages (using trafilatura for intelligent content extraction), plain text, and markdown files. The key challenge was chunking: academic papers have numbered sections and bibliography sections to strip, but web pages and markdown have different structure. Rather than adding flags to the existing chunker, I wrote a separate `chunk_plain_document()` that uses markdown heading detection and paragraph-based splitting — keeping each chunker optimized for its domain with zero regression risk to the original PDF pipeline.
 

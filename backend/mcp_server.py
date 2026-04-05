@@ -15,6 +15,7 @@ import sys
 from app.embedding.embedder import embed_query, embed_texts
 from app.generation.llm_client import generate_answer
 from app.ingestion import ingest_arxiv_url, ingest_web_url
+from app.ingestion.arxiv_search import search_arxiv
 from app.ingestion.web_search import search_web
 from app.retrieval.search import ensure_collection, get_collection_info, search, upsert_chunks
 
@@ -103,6 +104,81 @@ def search_chunks(question: str, top_k: int = 5) -> dict:
             for r in results
         ],
         "count": len(results),
+    }
+
+
+@mcp.tool()
+async def research_papers(question: str, max_papers: int = 3, top_k: int = 5) -> dict:
+    """Search ArXiv for relevant academic papers, ingest them, and answer the question.
+
+    This is the academic research tool. It:
+    1. Searches ArXiv's API for papers matching your question (free)
+    2. Downloads and ingests the top papers with section-aware chunking (free)
+    3. Queries the enriched knowledge base for a cited answer (~$0.0005)
+
+    Best for scientific, technical, and research questions. Papers are chunked
+    with academic-paper-optimized splitting (section detection, reference stripping).
+    Ingested papers persist in the knowledge base for future queries.
+
+    Args:
+        question: The research question to answer
+        max_papers: Number of ArXiv papers to search and ingest (default 3, max 5)
+        top_k: Number of source chunks to retrieve for the answer (default 5)
+    """
+    max_papers = min(max_papers, 5)
+
+    # Step 1: Search ArXiv
+    arxiv_results = await search_arxiv(question, max_results=max_papers)
+    if not arxiv_results:
+        return {"error": "No papers found on ArXiv for this query"}
+
+    # Step 2: Ingest each paper
+    ingested = []
+    for paper in arxiv_results:
+        try:
+            chunks, filename = await ingest_arxiv_url(paper["url"])
+            if chunks:
+                vectors = embed_texts([c["text"] for c in chunks])
+                upsert_chunks(chunks, vectors)
+                ingested.append({
+                    "title": paper["title"],
+                    "arxiv_id": paper["arxiv_id"],
+                    "url": paper["url"],
+                    "authors": paper["authors"],
+                    "chunks": len(chunks),
+                })
+        except Exception:
+            continue
+
+    if not ingested:
+        return {"error": "Could not download or extract any of the found papers"}
+
+    # Step 3: Query the now-enriched knowledge base
+    query_vector = embed_query(question)
+    results = search(query_vector, top_k=top_k)
+
+    if not results:
+        return {
+            "answer": "Ingested papers but could not find relevant chunks for this specific question.",
+            "sources": [],
+            "papers_ingested": ingested,
+        }
+
+    answer = generate_answer(question, results)
+    sources = [
+        {
+            "text": r["text"][:500],
+            "source_file": r["metadata"]["source_file"],
+            "section_title": r["metadata"]["section_title"],
+            "score": round(r["score"], 3),
+        }
+        for r in results
+    ]
+
+    return {
+        "answer": answer,
+        "sources": sources,
+        "papers_ingested": ingested,
     }
 
 
