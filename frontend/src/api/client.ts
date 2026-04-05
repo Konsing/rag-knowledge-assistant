@@ -79,6 +79,23 @@ export async function ingestPdf(file: File): Promise<IngestResponse> {
   return res.json();
 }
 
+export async function ingestWebUrl(url: string): Promise<IngestResponse> {
+  const form = new FormData();
+  form.append("url", url);
+
+  const res = await fetch(`${BASE_URL}/ingest`, {
+    method: "POST",
+    body: form,
+  });
+
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.detail || "Ingestion failed");
+  }
+
+  return res.json();
+}
+
 export async function queryKnowledgeBase(
   question: string,
   topK: number = 5

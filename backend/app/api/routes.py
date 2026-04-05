@@ -12,7 +12,7 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 from app.embedding.embedder import embed_query, embed_texts
 from app.generation.llm_client import generate_answer
-from app.ingestion import ingest_arxiv_url, ingest_pdf
+from app.ingestion import ingest_arxiv_url, ingest_pdf, ingest_text_file, ingest_web_url
 from app.models import IngestResponse, QueryRequest, QueryResponse, SourceChunk, ChunkMetadata
 from app.retrieval.search import get_collection_info, search, upsert_chunks
 
@@ -36,22 +36,29 @@ async def collection_stats():
 async def ingest_document(
     file: UploadFile | None = File(None),
     arxiv_url: str | None = Form(None),
+    url: str | None = Form(None),
 ):
     """
-    Ingest a PDF file or ArXiv URL into the knowledge base.
+    Ingest a document into the knowledge base.
 
-    Accepts either:
-    - A PDF file upload (multipart form)
-    - An ArXiv URL (form field)
+    Accepts one of:
+    - A file upload (PDF, .txt, or .md)
+    - An ArXiv URL (arxiv_url field)
+    - A web page URL (url field)
 
-    Pipeline: fetch/load PDF → chunk → embed → store in Qdrant
+    Pipeline: load/fetch → chunk → embed → store in Qdrant
     """
-    if not file and not arxiv_url:
-        raise HTTPException(status_code=400, detail="Provide either a PDF file or an ArXiv URL")
+    if not file and not arxiv_url and not url:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide a file upload, ArXiv URL, or web page URL",
+        )
 
     try:
         if arxiv_url:
             chunks, filename = await ingest_arxiv_url(arxiv_url)
+        elif url:
+            chunks, filename = await ingest_web_url(url)
         else:
             # Save uploaded file to disk temporarily
             os.makedirs(DATA_DIR, exist_ok=True)
@@ -61,7 +68,12 @@ async def ingest_document(
                 tmp.write(content)
                 tmp_path = tmp.name
             filename = file.filename
-            chunks = await ingest_pdf(tmp_path, filename)
+
+            # Route to appropriate pipeline based on file type
+            if suffix.lower() in (".txt", ".md"):
+                chunks = await ingest_text_file(tmp_path, filename)
+            else:
+                chunks = await ingest_pdf(tmp_path, filename)
 
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

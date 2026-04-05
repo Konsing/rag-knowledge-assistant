@@ -1,9 +1,10 @@
 import { useRef, useState } from "react";
-import { ingestArxivUrl, ingestPdf, getStats } from "../api/client";
+import { ingestArxivUrl, ingestPdf, ingestWebUrl, getStats } from "../api/client";
 import type { CollectionStats } from "../api/client";
 
 export default function IngestPanel() {
   const [url, setUrl] = useState("");
+  const [webUrl, setWebUrl] = useState("");
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<{
     text: string;
@@ -32,6 +33,28 @@ export default function IngestPanel() {
       const res = await ingestArxivUrl(url.trim());
       setMessage({ text: res.message, type: "success" });
       setUrl("");
+      refreshStats();
+    } catch (err) {
+      setMessage({
+        text: err instanceof Error ? err.message : "Ingestion failed",
+        type: "error",
+      });
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleWebUrlSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!webUrl.trim() || loading) return;
+
+    setLoading(true);
+    setMessage(null);
+
+    try {
+      const res = await ingestWebUrl(webUrl.trim());
+      setMessage({ text: res.message, type: "success" });
+      setWebUrl("");
       refreshStats();
     } catch (err) {
       setMessage({
@@ -108,13 +131,40 @@ export default function IngestPanel() {
         <div className="flex-1 border-t border-gray-200" />
       </div>
 
-      {/* PDF upload */}
+      {/* Web URL input */}
+      <form onSubmit={handleWebUrlSubmit} className="space-y-2">
+        <label className="block text-sm text-gray-600">Web Page URL</label>
+        <input
+          type="text"
+          value={webUrl}
+          onChange={(e) => setWebUrl(e.target.value)}
+          placeholder="https://en.wikipedia.org/wiki/..."
+          className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          disabled={loading}
+        />
+        <button
+          type="submit"
+          disabled={loading || !webUrl.trim()}
+          className="w-full bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-green-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
+        >
+          {loading ? "Ingesting..." : "Ingest Web Page"}
+        </button>
+      </form>
+
+      {/* Divider */}
+      <div className="flex items-center gap-2">
+        <div className="flex-1 border-t border-gray-200" />
+        <span className="text-xs text-gray-400">or</span>
+        <div className="flex-1 border-t border-gray-200" />
+      </div>
+
+      {/* File upload */}
       <div>
-        <label className="block text-sm text-gray-600 mb-2">Upload PDF</label>
+        <label className="block text-sm text-gray-600 mb-2">Upload File</label>
         <input
           ref={fileInputRef}
           type="file"
-          accept=".pdf"
+          accept=".pdf,.txt,.md"
           onChange={handleFileUpload}
           disabled={loading}
           className="w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-gray-100 file:text-gray-700 hover:file:bg-gray-200 disabled:opacity-50"

@@ -158,6 +158,83 @@ def _split_into_chunks(
     return chunks
 
 
+# Markdown heading patterns for non-academic documents
+MARKDOWN_HEADING_PATTERN = r"\n#{1,3}\s+.+\n"
+
+
+def _detect_markdown_sections(text: str) -> list[dict]:
+    """
+    Detect sections from markdown headings (# Title, ## Subtitle, etc.).
+
+    Falls back to treating the entire document as one section
+    if fewer than 2 headings are found.
+    """
+    headers = list(re.finditer(MARKDOWN_HEADING_PATTERN, text))
+    if len(headers) >= 2:
+        sections = _headers_to_sections(headers, text)
+        sections = [s for s in sections if len(s["text"]) >= MIN_SECTION_LENGTH]
+        if len(sections) >= 2:
+            return sections
+
+    return [{"title": "Full Document", "text": text}]
+
+
+def chunk_plain_document(
+    pages: list[dict],
+    source_file: str,
+    chunk_size: int | None = None,
+    chunk_overlap: int | None = None,
+) -> list[dict]:
+    """
+    Chunk a non-academic document (text, markdown, web page).
+
+    Unlike chunk_document(), this skips reference stripping and academic
+    section detection. Uses markdown heading detection if available,
+    otherwise falls back to paragraph-based splitting.
+
+    Args:
+        pages: List of {page_number, text} dicts
+        source_file: Source identifier (filename or URL)
+        chunk_size: Target chunk size in tokens (default from config)
+        chunk_overlap: Overlap between chunks in tokens (default from config)
+
+    Returns:
+        List of dicts with keys: text, metadata
+    """
+    chunk_size = chunk_size or settings.chunk_size
+    chunk_overlap = chunk_overlap or settings.chunk_overlap
+
+    full_text = "\n".join(p["text"] for p in pages)
+    sections = _detect_markdown_sections(full_text)
+
+    doc_id = str(uuid.uuid4())[:8]
+    all_chunks = []
+    chunk_index = 0
+
+    for section in sections:
+        section_chunks = _split_into_chunks(
+            section["text"], chunk_size, chunk_overlap
+        )
+
+        for chunk_text in section_chunks:
+            if len(chunk_text.strip()) < 50:
+                continue
+
+            all_chunks.append({
+                "text": chunk_text,
+                "metadata": {
+                    "source_file": source_file,
+                    "page_number": 1,
+                    "section_title": section["title"],
+                    "chunk_index": chunk_index,
+                    "doc_id": doc_id,
+                },
+            })
+            chunk_index += 1
+
+    return all_chunks
+
+
 def chunk_document(
     pages: list[dict],
     source_file: str,

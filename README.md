@@ -4,7 +4,7 @@ A production-quality Retrieval-Augmented Generation system built **from scratch*
 
 ## What It Does
 
-Upload ArXiv research papers (PDF or URL), and ask questions about them. The system retrieves relevant passages using vector similarity search and generates cited answers using an LLM (OpenAI or Claude, configurable).
+Upload documents — ArXiv papers, PDFs, web pages, or text files — and ask questions about them. The system retrieves relevant passages using vector similarity search and generates cited answers using an LLM (OpenAI or Claude, configurable). Also available as an **MCP server** so AI assistants like Claude Code can query your knowledge base directly.
 
 ### Example: Real Output
 
@@ -46,22 +46,24 @@ The system retrieves the relevant sections, cites them by number, and refuses to
 │  port 5173   │     │  port 8000   │     │  port 6333   │
 └──────────────┘     └──────┬───────┘     └──────────────┘
                             │
-                    ┌───────┴────────┐
-                    │  Claude API    │
-                    │  (Generation)  │
-                    └────────────────┘
+┌──────────────┐    ┌───────┴────────┐
+│  MCP Server  │───▶│  OpenAI/Claude │
+│  port 8811   │    │  (Generation)  │
+└──────────────┘    └────────────────┘
 ```
 
-**Modular monolith** — single backend with clear module boundaries:
+**Modular monolith** — single backend with clear module boundaries. The MCP server imports the same modules directly (zero duplication):
 
 ```
-backend/app/
-├── ingestion/    PDF loading, ArXiv fetching, text chunking
-├── embedding/    sentence-transformers (all-MiniLM-L6-v2)
-├── retrieval/    Qdrant cosine similarity search
-├── generation/   Claude API + prompt templates
-├── api/          FastAPI routes (thin delegation layer)
-└── config.py     Centralized Pydantic Settings
+backend/
+├── mcp_server.py     MCP server entry point (FastMCP)
+└── app/
+    ├── ingestion/    PDF, ArXiv, web pages, text/markdown loading + chunking
+    ├── embedding/    sentence-transformers (all-MiniLM-L6-v2)
+    ├── retrieval/    Qdrant cosine similarity search
+    ├── generation/   LLM client + prompt templates
+    ├── api/          FastAPI routes (thin delegation layer)
+    └── config.py     Centralized Pydantic Settings
 ```
 
 ## Tech Stack
@@ -71,54 +73,94 @@ backend/app/
 | PDF Extraction | PyMuPDF | Fast, handles complex layouts, page-level metadata |
 | Embeddings | all-MiniLM-L6-v2 | 384-dim vectors, free, runs locally |
 | Vector DB | Qdrant (Docker) | Free local mode, excellent SDK, metadata filtering |
-| LLM | Claude API (Sonnet) | Strong instruction-following for citations |
+| Web Scraping | trafilatura | Extracts article text, strips boilerplate automatically |
+| MCP Server | FastMCP (MCP SDK) | Exposes RAG as tools for AI assistants |
+| LLM | OpenAI GPT-4o-mini / Claude | Configurable; strong instruction-following for citations |
 | Backend | FastAPI | Async, auto OpenAPI docs, Pydantic integration |
 | Frontend | React + Vite + Tailwind | Fast dev, modern stack |
 
 ## Prerequisites
 
 - [Docker](https://docs.docker.com/get-docker/) and Docker Compose
-- [Anthropic API key](https://console.anthropic.com/) for generation
+- An **OpenAI API key** (GPT-4o-mini, ~$0.0005/query) or **Anthropic API key** (Claude Sonnet)
 
 ## Quick Start
 
 ```bash
 # 1. Clone and enter the project
-git clone <your-repo-url>
+git clone https://github.com/Konsing/rag-knowledge-assistant.git
 cd rag-knowledge-assistant
 
 # 2. Set up environment
 cp .env.example .env
-# Edit .env and add your ANTHROPIC_API_KEY
+# Edit .env — add your API key and set LLM_PROVIDER to "openai" or "claude"
 
-# 3. Run everything
-docker-compose up --build
+# 3. Run everything (Qdrant + backend + frontend + MCP server)
+docker compose up --build
 
 # 4. Open the UI
 # Frontend:  http://localhost:5173
 # API docs:  http://localhost:8000/docs
 # Qdrant:    http://localhost:6333/dashboard
+# MCP:       http://localhost:8811/mcp (for AI assistant integration)
 ```
+
+## Supported Document Types
+
+| Source | How to ingest | Chunking strategy |
+|--------|---------------|-------------------|
+| ArXiv papers | Paste URL in UI or API (`arxiv_url` field) | Section-aware (detects numbered sections, ALL-CAPS headers), strips references |
+| PDF files | Upload in UI or API (`file` field) | Same as ArXiv ��� section-aware with page tracking |
+| Web pages | Paste URL in UI or API (`url` field) | Markdown heading detection, paragraph fallback |
+| Text files (.txt) | Upload in UI or API | Paragraph-based splitting |
+| Markdown files (.md) | Upload in UI or API | Markdown heading detection (`#`, `##`, `###`) |
+
+All sources go through the same pipeline after chunking: embed locally with sentence-transformers → store in Qdrant → available for retrieval. Embedding and storage are always free.
+
+### Example: Web page ingestion
+
+I ingested the [Wikipedia article on Retrieval-augmented generation](https://en.wikipedia.org/wiki/Retrieval-augmented_generation) and queried:
+
+**Q: "What is retrieval augmented generation?"**
+
+> Retrieval-augmented generation (RAG) is a technique that enhances large language models (LLMs)
+> by enabling them to retrieve and incorporate new information from external data sources when
+> responding to user queries. Instead of relying solely on pre-existing training data, RAG allows
+> LLMs to access specific documents, databases, or web sources to supplement their responses and
+> provide more accurate and up-to-date information. This method helps reduce AI hallucinations —
+> instances where models produce incorrect or fabricated information — by grounding responses in
+> factual content [1][2][3].
+>
+> *Source: en.wikipedia.org, 10 chunks ingested, top score 0.60*
+
+The system extracted the article text from Wikipedia (stripping navigation, ads, and sidebar boilerplate using trafilatura), chunked it, and grounded its answer in the actual article content.
 
 ## API Endpoints
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `GET` | `/api/health` | Health check |
-| `POST` | `/api/ingest` | Upload PDF or provide ArXiv URL |
+| `POST` | `/api/ingest` | Upload file (PDF/txt/md), ArXiv URL, or web URL |
 | `POST` | `/api/query` | Ask a question, get cited answer |
 
-### Ingest a paper
+### Ingest documents
 
 ```bash
 # Upload a PDF
 curl -X POST http://localhost:8000/api/ingest \
   -F "file=@paper.pdf"
 
-# Or provide an ArXiv URL
+# ArXiv URL
 curl -X POST http://localhost:8000/api/ingest \
-  -H "Content-Type: application/json" \
-  -d '{"arxiv_url": "https://arxiv.org/abs/2301.00001"}'
+  -F "arxiv_url=https://arxiv.org/abs/2301.00001"
+
+# Web page
+curl -X POST http://localhost:8000/api/ingest \
+  -F "url=https://en.wikipedia.org/wiki/Retrieval-augmented_generation"
+
+# Text or markdown file
+curl -X POST http://localhost:8000/api/ingest \
+  -F "file=@notes.md"
 ```
 
 ### Query the knowledge base
@@ -129,19 +171,96 @@ curl -X POST http://localhost:8000/api/query \
   -d '{"question": "What were the main findings?", "top_k": 5}'
 ```
 
+## MCP Server (AI Assistant Integration)
+
+The RAG pipeline is also available as an [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) server, so AI assistants like Claude Code can query your knowledge base as a tool — no copy-pasting, no browser needed.
+
+### How it works
+
+The MCP server runs as a separate Docker service that imports the same backend modules directly. When Claude Code calls a tool like `query_knowledge_base`, the MCP server embeds the question, searches Qdrant, and generates a cited answer — identical to what the React UI does.
+
+### Setup
+
+```bash
+# 1. Start all services (MCP server included)
+docker compose up --build
+
+# 2. The project includes .mcp.json — Claude Code picks it up automatically
+#    when you open a terminal in this project directory
+```
+
+That's it. The `.mcp.json` file tells Claude Code to connect to `http://localhost:8811/mcp`. No manual configuration needed.
+
+If you want to run the MCP server standalone (e.g., for testing without the frontend):
+```bash
+docker compose up qdrant mcp-server
+```
+
+### Available tools
+
+| MCP Tool | What it does | Cost |
+|----------|-------------|------|
+| `query_knowledge_base` | Get a cited answer from the knowledge base | ~$0.0005 |
+| `search_chunks` | Find relevant chunks without LLM generation | Free |
+| `ingest_arxiv` | Add an ArXiv paper to the knowledge base | Free |
+| `ingest_web_page` | Add a web page to the knowledge base | Free |
+| `get_stats` | Check how many chunks are indexed | Free |
+
+I designed `search_chunks` as a free alternative to `query_knowledge_base` — it returns raw document chunks without calling the LLM, so the AI assistant can decide whether it needs a full generated answer or just wants to look up a fact.
+
+### Example: Using MCP tools in Claude Code
+
+Once the MCP server is running, you can ask Claude Code things like:
+
+> "Use the knowledge base to look up what retrieval augmented generation is"
+
+Claude Code will call `query_knowledge_base` and return a cited answer from your ingested documents.
+
+> "Ingest this ArXiv paper into the knowledge base: https://arxiv.org/abs/2301.08745"
+
+Claude Code will call `ingest_arxiv`, which downloads the paper, chunks it, embeds it, and stores it in Qdrant.
+
+> "Ingest this Wikipedia article: https://en.wikipedia.org/wiki/Transformer_(deep_learning_architecture)"
+
+Claude Code will call `ingest_web_page`, which fetches the page, extracts the main content (stripping ads/nav), chunks it, and stores it.
+
+### Alternative: stdio transport
+
+If you want to run the MCP server without Docker (e.g., directly on your machine), you can use stdio transport. Update `.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "rag-knowledge-base": {
+      "type": "stdio",
+      "command": "python",
+      "args": ["backend/mcp_server.py", "--transport", "stdio"],
+      "env": {
+        "QDRANT_HOST": "localhost",
+        "QDRANT_PORT": "6333"
+      }
+    }
+  }
+}
+```
+
+This requires Qdrant running locally and Python dependencies installed on the host.
+
 ## Project Structure
 
 ```
 rag-knowledge-assistant/
-├── docker-compose.yml          Orchestrates all services
+├── docker-compose.yml          Orchestrates all services (Qdrant, backend, frontend, MCP)
+├── .mcp.json                   Claude Code MCP server configuration
 ├── backend/
 │   ├── Dockerfile
 │   ├── requirements.txt
 │   ├── main.py                 FastAPI entry point
+│   ├── mcp_server.py           MCP server entry point
 │   └── app/
 │       ├── config.py           Pydantic Settings (.env loader)
 │       ├── models.py           Shared request/response schemas
-│       ├── ingestion/          PDF loading + chunking
+│       ├── ingestion/          PDF, ArXiv, web, text/markdown loading + chunking
 │       ├── embedding/          Vector encoding
 │       ├── retrieval/          Similarity search
 │       ├── generation/         LLM + prompts
@@ -151,7 +270,7 @@ rag-knowledge-assistant/
 │   └── src/                    React + Tailwind UI
 ├── eval/
 │   └── eval_retrieval.py       Retrieval quality evaluation
-└── data/                       Local PDF storage (gitignored)
+└── data/                       Local document storage (gitignored)
 ```
 
 ## Build Phases
@@ -166,6 +285,8 @@ rag-knowledge-assistant/
 | 6 | FastAPI endpoints (full implementation) | Done |
 | 7 | React chat UI with source citations | Done |
 | 8 | Evaluation script (precision scoring) | Done |
+| 9 | MCP server (AI assistant integration) | Done |
+| 10 | Broader search (web pages, text, markdown) | Done |
 
 ## What Would Change in Production
 
@@ -191,5 +312,9 @@ I built every layer of this RAG system from scratch — no LangChain, no LlamaIn
 **Quantitative evaluation.** I wrote an evaluation harness with 10 test questions and expected section keywords. The system achieves 70% retrieval precision — a solid baseline that identifies exactly where improvements are needed (vocabulary mismatch on generic queries). The misses informed my understanding of when reranking and query expansion become necessary.
 
 **Architecture decisions.** I chose a modular monolith — single FastAPI service with clear module boundaries (ingestion, embedding, retrieval, generation, API). Routes are deliberately thin — they validate input and delegate to modules. All configuration flows through Pydantic BaseSettings. I chose ArXiv papers as test data intentionally: they're open access (no licensing issues), well-structured (good for learning chunking), and make the demo credible to a technical audience.
+
+**MCP server for AI assistant integration.** I wrapped the entire RAG pipeline as an MCP (Model Context Protocol) server using the FastMCP SDK. This means Claude Code or any MCP-compatible AI assistant can query my knowledge base, ingest new documents, and search for information — all as tool calls. The MCP server imports the same backend modules directly (zero code duplication), and I designed two search tools: `query_knowledge_base` (generates a full cited answer, costs ~$0.0005) and `search_chunks` (returns raw chunks without an LLM call, completely free). This cost-conscious design means the AI assistant can choose the right tool based on whether it needs a synthesized answer or just a quick lookup.
+
+**Broader document support.** I extended the system beyond just ArXiv papers to support web pages (using trafilatura for intelligent content extraction), plain text, and markdown files. The key challenge was chunking: academic papers have numbered sections and bibliography sections to strip, but web pages and markdown have different structure. Rather than adding flags to the existing chunker, I wrote a separate `chunk_plain_document()` that uses markdown heading detection and paragraph-based splitting — keeping each chunker optimized for its domain with zero regression risk to the original PDF pipeline.
 
 **What I'd change at scale:** swap to OpenAI embeddings or Cohere for better quality, add a cross-encoder reranker between retrieval and generation, use an async job queue for ingestion, add structured logging and latency metrics, and deploy Qdrant Cloud instead of local Docker.
