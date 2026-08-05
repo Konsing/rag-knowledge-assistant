@@ -1,12 +1,16 @@
-import { useRef, useState, useEffect } from "react";
+import { useCallback, useRef, useState, useEffect } from "react";
 import { queryKnowledgeBase } from "../api/client";
-import type { SourceChunk } from "../api/client";
+import type { DemoConfig, DocumentSummary, SourceChunk } from "../api/client";
+import HCaptcha from "./HCaptcha";
 import MessageBubble from "./MessageBubble";
 
 interface Message {
   question: string;
   answer: string;
   sources: SourceChunk[];
+  latencyMs: number;
+  cached: boolean;
+  model: string;
 }
 
 const SUGGESTED_QUESTIONS = [
@@ -15,12 +19,26 @@ const SUGGESTED_QUESTIONS = [
   "What future work is suggested?",
 ];
 
-export default function ChatWindow() {
+interface Props {
+  demoConfig?: DemoConfig | null;
+  documents?: DocumentSummary[];
+  selectedDocIds?: string[];
+  draftQuestion?: { text: string; nonce: number } | null;
+}
+
+export default function ChatWindow({
+  demoConfig = null,
+  documents = [],
+  selectedDocIds = [],
+  draftQuestion = null,
+}: Props) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pendingQuestion, setPendingQuestion] = useState<string | null>(null);
+  const [captchaToken, setCaptchaToken] = useState("");
+  const [captchaResetNonce, setCaptchaResetNonce] = useState(0);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -35,6 +53,24 @@ export default function ChatWindow() {
     }
   }, [input]);
 
+  useEffect(() => {
+    if (draftQuestion) {
+      setInput(draftQuestion.text);
+      textareaRef.current?.focus();
+    }
+  }, [draftQuestion]);
+
+  const handleCaptchaVerify = useCallback((token: string) => {
+    setCaptchaToken(token);
+  }, []);
+
+  const suggestedQuestions = demoConfig
+    ? documents
+        .filter((document) => selectedDocIds.includes(document.doc_id))
+        .flatMap((document) => document.sample_questions)
+        .slice(0, 3)
+    : SUGGESTED_QUESTIONS;
+
   async function submitQuestion(question: string) {
     if (!question || loading) return;
     setInput("");
@@ -42,10 +78,22 @@ export default function ChatWindow() {
     setPendingQuestion(question);
     setLoading(true);
     try {
-      const response = await queryKnowledgeBase(question);
+      const response = await queryKnowledgeBase(
+        question,
+        5,
+        selectedDocIds,
+        captchaToken,
+      );
       setMessages((prev) => [
         ...prev,
-        { question, answer: response.answer, sources: response.sources },
+        {
+          question,
+          answer: response.answer,
+          sources: response.sources,
+          latencyMs: response.latency_ms,
+          cached: response.cached,
+          model: response.model,
+        },
       ]);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Query failed");
@@ -53,6 +101,7 @@ export default function ChatWindow() {
     } finally {
       setLoading(false);
       setPendingQuestion(null);
+      if (demoConfig?.captcha_enabled) setCaptchaResetNonce((value) => value + 1);
     }
   }
 
@@ -85,16 +134,18 @@ export default function ChatWindow() {
                 Ask your knowledge base
               </h2>
               <p className="text-[16px] text-[#888] mb-10 leading-relaxed">
-                Ingest documents using the sidebar, then ask questions.
-                Answers are grounded in your sources with citations.
+                {demoConfig
+                  ? "Choose curated papers from the library, ask a question, and inspect exactly which chunks supported the answer."
+                  : "Ingest documents using the sidebar, then ask questions. Answers are grounded in your sources with citations."}
               </p>
 
               <div className="space-y-3">
-                {SUGGESTED_QUESTIONS.map((q) => (
+                {suggestedQuestions.map((q) => (
                   <button
                     key={q}
                     onClick={() => submitQuestion(q)}
-                    className="w-full text-left px-5 py-4 rounded-lg border border-[#2a2a2a] text-[16px] text-[#aaa] hover:text-[#ddd] hover:border-[#444] hover:bg-[#1e1e1e] transition-colors"
+                    disabled={Boolean(demoConfig?.captcha_enabled && !captchaToken)}
+                    className="w-full text-left px-5 py-4 rounded-lg border border-[#2a2a2a] text-[16px] text-[#aaa] hover:text-[#ddd] hover:border-[#444] hover:bg-[#1e1e1e] disabled:cursor-not-allowed disabled:opacity-50 transition-colors"
                   >
                     <span className="text-[#666] mr-2">&rarr;</span>
                     {q}
@@ -143,6 +194,14 @@ export default function ChatWindow() {
       {/* Input area */}
       <div className="border-t border-[#2a2a2a] bg-[#191919] px-8 py-5">
         <form onSubmit={handleSubmit} className="max-w-3xl mx-auto">
+          {demoConfig && (
+            <div className="mb-3 flex items-center justify-between text-[12px] text-[#777]">
+              <span>
+                Retrieval scope: {selectedDocIds.length || "all"} document{selectedDocIds.length === 1 ? "" : "s"}
+              </span>
+              <span>{demoConfig.queries_per_hour} queries/hour</span>
+            </div>
+          )}
           <div className="relative flex items-end gap-3 bg-[#1e1e1e] border border-[#2a2a2a] rounded-xl p-2 focus-within:border-[#444] transition-colors">
             <textarea
               ref={textareaRef}
@@ -152,11 +211,16 @@ export default function ChatWindow() {
               placeholder="Ask a question about your documents..."
               rows={1}
               className="flex-1 bg-transparent px-4 py-3 text-[16px] text-[#eee] resize-none focus:outline-none placeholder:text-[#666]"
-              disabled={loading}
+              disabled={loading || Boolean(demoConfig && documents.length === 0)}
             />
             <button
               type="submit"
-              disabled={loading || !input.trim()}
+              disabled={
+                loading ||
+                !input.trim() ||
+                Boolean(demoConfig?.captcha_enabled && !captchaToken) ||
+                Boolean(demoConfig && documents.length === 0)
+              }
               className="p-3 rounded-lg bg-[#eee] text-[#141414] hover:bg-white disabled:bg-[#222] disabled:text-[#555] disabled:cursor-not-allowed transition-colors flex-shrink-0"
               aria-label="Send"
             >
@@ -165,8 +229,18 @@ export default function ChatWindow() {
               </svg>
             </button>
           </div>
+          {demoConfig?.captcha_enabled && demoConfig.captcha_site_key && (
+            <div className="mt-3 flex justify-center">
+              <HCaptcha
+                siteKey={demoConfig.captcha_site_key}
+                resetNonce={captchaResetNonce}
+                onVerify={handleCaptchaVerify}
+              />
+            </div>
+          )}
           <p className="text-[13px] text-[#666] mt-2.5 text-center">
             Enter to send &middot; Shift+Enter for new line
+            {demoConfig && " · Anonymous questions are not saved"}
           </p>
         </form>
       </div>

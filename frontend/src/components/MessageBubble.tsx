@@ -6,6 +6,9 @@ interface Message {
   question: string;
   answer: string;
   sources: SourceChunk[];
+  latencyMs: number;
+  cached: boolean;
+  model: string;
 }
 
 function ScoreBar({ score }: { score: number }) {
@@ -38,7 +41,16 @@ export default function MessageBubble({ message }: { message: Message }) {
 
       {/* AI answer */}
       <div className="py-6 border-t border-[#222]">
-        <div className="text-[15px] text-[#888] mb-2">Assistant</div>
+        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+          <div className="text-[15px] text-[#888]">Assistant</div>
+          {(message.model || message.latencyMs > 0 || message.cached) && (
+            <div className="text-[12px] text-[#666]">
+              {message.model}
+              {message.model && (message.cached || message.latencyMs > 0) && " · "}
+              {message.cached ? "cached response" : `${(message.latencyMs / 1000).toFixed(1)}s`}
+            </div>
+          )}
+        </div>
         <div className="text-[17px] text-[#ddd] leading-relaxed prose prose-invert max-w-none prose-p:my-3 prose-p:leading-relaxed prose-li:my-1.5 prose-headings:mt-5 prose-headings:mb-3 prose-headings:text-[#eee] prose-headings:text-[18px] prose-strong:text-[#eee] prose-strong:font-semibold prose-code:text-[#ddd] prose-code:bg-[#222] prose-code:px-2 prose-code:py-1 prose-code:rounded prose-code:text-[15px] prose-code:font-normal prose-a:text-[#ccc] prose-a:underline prose-a:underline-offset-2">
           <Markdown>{message.answer}</Markdown>
         </div>
@@ -56,7 +68,7 @@ export default function MessageBubble({ message }: { message: Message }) {
               >
                 <path fillRule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clipRule="evenodd" />
               </svg>
-              {message.sources.length} sources
+              Retrieval trace · {message.sources.length} chunks
             </button>
 
             {showSources && (
@@ -87,10 +99,11 @@ export default function MessageBubble({ message }: { message: Message }) {
                         {source.metadata.section_title && <span>{source.metadata.section_title}</span>}
                       </div>
                     )}
-                    {(source.metadata.source_file.startsWith("http://") ||
+                    {(source.metadata.source_url ||
+                      source.metadata.source_file.startsWith("http://") ||
                       source.metadata.source_file.startsWith("https://")) && (
                       <a
-                        href={source.metadata.source_file}
+                        href={source.metadata.source_url || source.metadata.source_file}
                         target="_blank"
                         rel="noreferrer"
                         className="inline-block mt-2 text-[13px] text-[#aaa] underline underline-offset-2"

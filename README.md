@@ -4,6 +4,8 @@ A production-quality Retrieval-Augmented Generation system built **from scratch*
 
 The current implementation includes guarded public-URL ingestion, bounded uploads and LLM context, idempotent vector writes, isolated auto-research retrieval, optional API-key protection, a shared async API/MCP service layer, production Nginx frontend serving, Docker health checks, and backend/frontend regression tests.
 
+It also includes an opt-in **public showcase mode**: visitors can browse a curated document library, select the papers used for retrieval, ask guarded anonymous questions, and inspect the ranked chunks, scores, citations, model, latency, and cache status behind each answer. In showcase mode, ingestion and corpus seeding remain administrator-only.
+
 ## What It Does
 
 Upload documents — ArXiv papers, PDFs, web pages, or text files — and ask questions about them. The system retrieves relevant passages using vector similarity search and generates cited answers using an LLM (OpenAI or Claude, configurable).
@@ -157,6 +159,10 @@ The most commonly changed `.env` values are:
 | `MAX_UPLOAD_BYTES` / `MAX_WEB_BYTES` / `MAX_PDF_BYTES` | Ingestion safety limits |
 | `APP_API_KEY` / `VITE_API_KEY` | Optional matching keys for local API protection |
 | `CORS_ORIGINS` | Comma-separated browser origins allowed to call the API |
+| `DEMO_MODE` / `ADMIN_API_KEY` | Enable public query-only mode while keeping writes private |
+| `DEMO_QUERIES_PER_HOUR` / `DEMO_QUERIES_PER_DAY` | Anonymous per-client and global generation caps |
+| `HCAPTCHA_SITE_KEY` / `HCAPTCHA_SECRET` | Optional hCaptcha Basic bot verification |
+| `EMBEDDING_PROVIDER` | `local` or free Qdrant Cloud inference for the slim hosted API |
 
 When `VITE_API_KEY` changes, rebuild the frontend image. It is embedded in the browser bundle and is therefore only a local access deterrent, not a substitute for user authentication.
 
@@ -170,7 +176,7 @@ When `VITE_API_KEY` changes, rebuild the frontend image. It is embedded in the b
 | Text files (.txt) | Upload in UI or API | Paragraph-based splitting |
 | Markdown files (.md) | Upload in UI or API | Markdown heading detection (`#`, `##`, `###`) |
 
-All sources go through the same pipeline after chunking: embed locally with sentence-transformers → store in Qdrant → available for retrieval. Embedding and storage are always free — only LLM answer generation costs anything (~$0.0005/query).
+In the local stack, all sources go through the same pipeline after chunking: embed locally with sentence-transformers → store in Qdrant → available for retrieval. That local embedding and storage path has no metered service charge. The hosted showcase currently uses Qdrant Cloud's free cluster and free MiniLM inference; those vendor terms can change. LLM answer generation remains usage-billed by OpenAI or Anthropic.
 
 ## API Endpoints
 
@@ -180,6 +186,10 @@ All sources go through the same pipeline after chunking: embed locally with sent
 | `GET` | `/api/stats` | Collection stats (chunk count) |
 | `POST` | `/api/ingest` | Upload file (PDF/txt/md), ArXiv URL, or web URL |
 | `POST` | `/api/query` | Ask a question, get cited answer |
+| `GET` | `/api/demo/config` | Public UI mode and limit configuration |
+| `GET` | `/api/documents` | Browse indexed documents in showcase mode |
+| `GET` | `/api/documents/{doc_id}` | Inspect one document and its stored chunks |
+| `POST` | `/api/admin/seed` | Idempotently seed the curated demo corpus (admin only) |
 
 ### Ingest documents
 
@@ -333,16 +343,27 @@ This requires Qdrant running locally and Python dependencies installed on the ho
 - Identical source content receives stable document and vector IDs, so retrying the same ingestion replaces those vector points instead of growing duplicates.
 - Auto-research answers are filtered to the documents ingested by that tool call; unrelated existing collection content is excluded.
 - The local embedding model is loaded lazily on the first ingest or query. The first call can therefore take longer while the model cache is populated.
+- Showcase mode keeps ingestion behind `X-Admin-Key`, supports optional server-verified hCaptcha, limits requests per client, stores a global daily generation counter in Qdrant, and caches repeated questions. The public browser never receives an LLM, Qdrant, hCaptcha secret, or administrator key.
+
+## Public Showcase Deployment
+
+The repository includes a no-monthly-hosting-cost deployment path using Vercel Hobby for the static frontend, Render Free for the slim FastAPI image, Qdrant Cloud Free for vector storage and free `all-MiniLM-L6-v2` inference, and hCaptcha Basic for bot protection. OpenAI or Anthropic answer generation is still usage-billed, so configure a dedicated project key and a provider-side budget limit.
+
+`DEMO_MODE` is a backend environment variable. For local use, copy `.env.example` to the repository-root `.env` and set `DEMO_MODE=true`; the hosted Render configuration already sets it to true in `render.yaml`. Do not add it to Vercel.
+
+Free plans are controlled by their vendors and cannot be guaranteed forever. Render currently cold-starts free services after inactivity, and Qdrant may suspend or eventually delete an inactive free cluster. The application therefore keeps the deployment portable and the curated corpus reproducible through `backend/demo_documents.json` and the idempotent seed operation.
+
+See [docs/SHOWCASE_DEPLOYMENT.md](docs/SHOWCASE_DEPLOYMENT.md) for account creation, environment variables, deployment, seeding, security checks, cold-start expectations, and interview-day preparation.
 
 ## Tests and Evaluation
 
 Run the test suites from the repository root after creating `.env`:
 
 ```bash
-# Backend unit, API, security, retrieval, service, and MCP tests (40 tests)
+# Backend unit, API, security, retrieval, service, demo, and MCP tests (52 tests)
 docker compose run --rm --no-deps backend pytest -q
 
-# Frontend component tests (requires Node.js 20+)
+# Frontend component tests (4 tests; requires Node.js 20+)
 cd frontend
 npm ci
 npm test
@@ -373,16 +394,24 @@ For a quick manual functional test, open `http://localhost:5173`, upload a small
 ```
 rag-knowledge-assistant/
 ├── docker-compose.yml          Orchestrates all services (Qdrant, backend, frontend, MCP)
+├── render.yaml                 Render Free API deployment blueprint
 ├── .env.example                Environment variables template
 ├── .mcp.json                   Claude Code MCP server configuration
+├── docs/
+│   └── SHOWCASE_DEPLOYMENT.md  Guarded public-demo deployment runbook
 ├── backend/
 │   ├── Dockerfile
+│   ├── Dockerfile.demo         Slim hosted image (cloud embeddings, no PyTorch)
+│   ├── demo_documents.json     Reproducible curated showcase corpus
+│   ├── requirements-demo.txt   Slim hosted dependency set
 │   ├── requirements.txt
 │   ├── main.py                 FastAPI entry point
 │   ├── mcp_server.py           MCP server entry point (7 tools)
 │   ├── tests/                  Unit, API, security, and orchestration tests
 │   └── app/
 │       ├── config.py           Pydantic Settings (.env loader)
+│       ├── demo.py             CAPTCHA, limits, daily cap, and response cache
+│       ├── demo_seed.py        Idempotent curated-corpus seeding
 │       ├── models.py           Shared request/response schemas
 │       ├── service.py          Shared async API/MCP orchestration
 │       ├── ingestion/          PDF, ArXiv, web, text/markdown loading + chunking
@@ -402,11 +431,14 @@ rag-knowledge-assistant/
 │   ├── Dockerfile
 │   ├── nginx.conf              Production SPA serving + /api proxy
 │   ├── package-lock.json       Reproducible frontend dependencies
+│   ├── vercel.json             Static hosting and browser security headers
 │   └── src/
-│       ├── App.tsx             Main layout (sidebar + chat)
-│       ├── api/client.ts       API client (ingest, query, stats)
+│       ├── App.tsx             Local and showcase workspace layout
+│       ├── api/client.ts       API client (ingest, query, catalog, demo config)
 │       └── components/
 │           ├── ChatWindow.tsx   Chat interface with markdown rendering
+│           ├── DocumentLibrary.tsx Curated corpus and chunk inspector
+│           ├── HCaptcha.tsx     Public-demo bot challenge
 │           ├── IngestPanel.tsx   Document ingestion sidebar
 │           └── MessageBubble.tsx Individual message display
 ├── eval/

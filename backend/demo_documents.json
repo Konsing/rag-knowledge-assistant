@@ -1,0 +1,32 @@
+[
+  {
+    "title": "Attention Is All You Need",
+    "source_url": "https://arxiv.org/abs/1706.03762",
+    "description": "The foundational Transformer paper introducing an attention-only architecture for sequence modeling.",
+    "sample_questions": [
+      "Why did the authors replace recurrence with attention?",
+      "How does multi-head attention work?",
+      "What results did the Transformer achieve on translation tasks?"
+    ]
+  },
+  {
+    "title": "Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks",
+    "source_url": "https://arxiv.org/abs/2005.11401",
+    "description": "The original RAG paper combining parametric generation with retrieved non-parametric memory.",
+    "sample_questions": [
+      "How does RAG combine retrieval and generation?",
+      "What is the difference between RAG-Sequence and RAG-Token?",
+      "Which knowledge-intensive tasks were evaluated?"
+    ]
+  },
+  {
+    "title": "Sentence-BERT: Sentence Embeddings using Siamese BERT-Networks",
+    "source_url": "https://arxiv.org/abs/1908.10084",
+    "description": "A sentence-embedding approach designed for efficient semantic similarity search.",
+    "sample_questions": [
+      "Why is standard BERT inefficient for semantic similarity search?",
+      "How is Sentence-BERT trained?",
+      "What speed and accuracy improvements were reported?"
+    ]
+  }
+]

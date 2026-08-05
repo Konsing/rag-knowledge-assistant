@@ -27,4 +27,65 @@ describe("ChatWindow", () => {
       );
     });
   });
+
+  it("scopes showcase queries to selected documents and displays trace metadata", async () => {
+    vi.mocked(queryKnowledgeBase).mockResolvedValueOnce({
+      answer: "Attention uses queries and keys [1].",
+      sources: [{
+        text: "Attention maps queries to key-value pairs.",
+        score: 0.82,
+        metadata: {
+          source_file: "paper.pdf",
+          page_number: 3,
+          section_title: "Attention",
+          chunk_index: 2,
+          doc_id: "doc-1",
+          title: "Attention Is All You Need",
+          source_url: "https://arxiv.org/abs/1706.03762",
+        },
+      }],
+      latency_ms: 1200,
+      cached: false,
+      model: "demo-model",
+    });
+    render(
+      <ChatWindow
+        demoConfig={{
+          enabled: true,
+          captcha_enabled: false,
+          captcha_site_key: "",
+          queries_per_hour: 10,
+          queries_per_day: 50,
+          max_selected_documents: 5,
+        }}
+        documents={[{
+          doc_id: "doc-1",
+          title: "Attention Is All You Need",
+          source_file: "paper.pdf",
+          source_url: "https://arxiv.org/abs/1706.03762",
+          description: "Transformer paper",
+          chunk_count: 12,
+          page_count: 15,
+          sections: ["Attention"],
+          sample_questions: [],
+        }]}
+        selectedDocIds={["doc-1"]}
+      />,
+    );
+
+    fireEvent.change(screen.getByPlaceholderText("Ask a question about your documents..."), {
+      target: { value: "How does attention work?" },
+    });
+    fireEvent.click(screen.getByLabelText("Send"));
+
+    await waitFor(() => {
+      expect(queryKnowledgeBase).toHaveBeenCalledWith(
+        "How does attention work?",
+        5,
+        ["doc-1"],
+        "",
+      );
+    });
+    expect(await screen.findByText("demo-model · 1.2s")).toBeInTheDocument();
+  });
 });

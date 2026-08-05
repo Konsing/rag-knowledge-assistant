@@ -1,0 +1,45 @@
+services:
+  - type: web
+    name: rag-showcase-api
+    runtime: docker
+    plan: free
+    region: oregon
+    dockerfilePath: ./backend/Dockerfile.demo
+    dockerContext: ./backend
+    healthCheckPath: /api/health
+    autoDeployTrigger: commit
+    envVars:
+      - key: DEMO_MODE
+        value: "true"
+      - key: DEMO_AUTO_SEED
+        value: "true"
+      - key: DEMO_DOCUMENTS_FILE
+        value: /app/demo_documents.json
+      - key: DEMO_QUERIES_PER_HOUR
+        value: "10"
+      - key: DEMO_QUERIES_PER_DAY
+        value: "50"
+      - key: DEMO_MAX_QUESTION_CHARS
+        value: "500"
+      - key: EMBEDDING_PROVIDER
+        value: qdrant_cloud
+      - key: EMBEDDING_MODEL
+        value: sentence-transformers/all-MiniLM-L6-v2
+      - key: QDRANT_CLOUD_INFERENCE
+        value: "true"
+      - key: QDRANT_URL
+        sync: false
+      - key: QDRANT_API_KEY
+        sync: false
+      - key: LLM_PROVIDER
+        value: openai
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: ADMIN_API_KEY
+        generateValue: true
+      - key: HCAPTCHA_SITE_KEY
+        sync: false
+      - key: HCAPTCHA_SECRET
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false

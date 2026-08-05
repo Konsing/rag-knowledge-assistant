@@ -1,4 +1,4 @@
-const BASE_URL = "/api";
+const BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, "") || "/api";
 const API_KEY = import.meta.env.VITE_API_KEY as string | undefined;
 
 export interface ChunkMetadata {
@@ -7,6 +7,8 @@ export interface ChunkMetadata {
   section_title: string;
   chunk_index: number;
   doc_id: string;
+  title: string;
+  source_url: string;
 }
 
 export interface SourceChunk {
@@ -25,11 +27,44 @@ export interface IngestResponse {
 export interface QueryResponse {
   answer: string;
   sources: SourceChunk[];
+  latency_ms: number;
+  cached: boolean;
+  model: string;
 }
 
 export interface CollectionStats {
   name: string;
   points_count: number;
+}
+
+export interface DocumentSummary {
+  doc_id: string;
+  title: string;
+  source_file: string;
+  source_url: string;
+  description: string;
+  chunk_count: number;
+  page_count: number;
+  sections: string[];
+  sample_questions: string[];
+}
+
+export interface DocumentChunk {
+  text: string;
+  metadata: ChunkMetadata;
+}
+
+export interface DocumentDetail extends DocumentSummary {
+  chunks: DocumentChunk[];
+}
+
+export interface DemoConfig {
+  enabled: boolean;
+  captcha_enabled: boolean;
+  captcha_site_key: string;
+  queries_per_hour: number;
+  queries_per_day: number;
+  max_selected_documents: number;
 }
 
 async function apiRequest<T>(
@@ -84,6 +119,18 @@ export function getStats(): Promise<CollectionStats> {
   return apiRequest("/stats");
 }
 
+export function getDemoConfig(): Promise<DemoConfig> {
+  return apiRequest("/demo/config", {}, 90_000);
+}
+
+export function getDocuments(): Promise<DocumentSummary[]> {
+  return apiRequest("/documents");
+}
+
+export function getDocument(docId: string): Promise<DocumentDetail> {
+  return apiRequest(`/documents/${encodeURIComponent(docId)}`);
+}
+
 export function ingestArxivUrl(url: string): Promise<IngestResponse> {
   const form = new FormData();
   form.append("arxiv_url", url);
@@ -102,13 +149,23 @@ export function ingestWebUrl(url: string): Promise<IngestResponse> {
   return apiRequest("/ingest", { method: "POST", body: form }, 120_000);
 }
 
-export function queryKnowledgeBase(question: string, topK = 5): Promise<QueryResponse> {
+export function queryKnowledgeBase(
+  question: string,
+  topK = 5,
+  docIds: string[] = [],
+  captchaToken = "",
+): Promise<QueryResponse> {
   return apiRequest(
     "/query",
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question, top_k: topK }),
+      body: JSON.stringify({
+        question,
+        top_k: topK,
+        doc_ids: docIds,
+        captcha_token: captchaToken,
+      }),
     },
     90_000,
   );

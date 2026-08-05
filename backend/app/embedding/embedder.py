@@ -6,15 +6,21 @@ The model is loaded once and reused across all requests.
 """
 
 from functools import lru_cache
-
-from sentence_transformers import SentenceTransformer
+from typing import Any
 
 MODEL_NAME = "all-MiniLM-L6-v2"
 EMBEDDING_DIM = 384
 
 @lru_cache(maxsize=1)
-def _get_model() -> SentenceTransformer:
+def _get_model() -> Any:
     """Load the embedding model lazily and reuse it across requests."""
+    try:
+        from sentence_transformers import SentenceTransformer
+    except ImportError as exc:
+        raise RuntimeError(
+            "Local embeddings are not installed; use EMBEDDING_PROVIDER=qdrant_cloud "
+            "or install the local embedding dependencies"
+        ) from exc
     return SentenceTransformer(MODEL_NAME)
 
 

@@ -9,7 +9,9 @@ RUN npm ci
 
 COPY --chown=node:node . .
 ARG VITE_API_KEY=""
+ARG VITE_API_BASE_URL=""
 ENV VITE_API_KEY=${VITE_API_KEY}
+ENV VITE_API_BASE_URL=${VITE_API_BASE_URL}
 RUN npm run build
 
 FROM nginxinc/nginx-unprivileged:1.29-alpine
