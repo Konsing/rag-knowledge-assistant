@@ -15,21 +15,18 @@ def extract_text_from_pdf(pdf_path: str) -> list[dict]:
     Returns:
         List of dicts with keys: page_number (1-indexed), text
     """
-    doc = fitz.open(pdf_path)
     pages = []
+    with fitz.open(pdf_path) as doc:
+        for page_num in range(len(doc)):
+            page = doc[page_num]
+            text = page.get_text()
 
-    for page_num in range(len(doc)):
-        page = doc[page_num]
-        text = page.get_text()
+            # Skip pages with negligible text (e.g., figures-only pages)
+            if len(text.strip()) < 50:
+                continue
 
-        # Skip pages with negligible text (e.g., figures-only pages)
-        if len(text.strip()) < 50:
-            continue
-
-        pages.append({
-            "page_number": page_num + 1,  # 1-indexed for human readability
-            "text": text,
-        })
-
-    doc.close()
+            pages.append({
+                "page_number": page_num + 1,  # 1-indexed for human readability
+                "text": text,
+            })
     return pages

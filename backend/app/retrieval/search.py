@@ -9,7 +9,14 @@ import uuid
 import warnings
 
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, PointStruct, VectorParams
+from qdrant_client.models import (
+    Distance,
+    FieldCondition,
+    Filter,
+    MatchAny,
+    PointStruct,
+    VectorParams,
+)
 
 from app.config import settings
 from app.embedding.embedder import EMBEDDING_DIM
@@ -28,15 +35,19 @@ def ensure_collection() -> None:
     Uses cosine distance because we care about directional similarity
     between text embeddings, not their magnitude.
     """
-    collections = [c.name for c in _client.get_collections().collections]
-    if settings.collection_name not in collections:
-        _client.create_collection(
-            collection_name=settings.collection_name,
-            vectors_config=VectorParams(
-                size=EMBEDDING_DIM,
-                distance=Distance.COSINE,
-            ),
-        )
+    if not _client.collection_exists(settings.collection_name):
+        try:
+            _client.create_collection(
+                collection_name=settings.collection_name,
+                vectors_config=VectorParams(
+                    size=EMBEDDING_DIM,
+                    distance=Distance.COSINE,
+                ),
+            )
+        except Exception:
+            # The API and MCP services may race to create the collection.
+            if not _client.collection_exists(settings.collection_name):
+                raise
 
 
 def upsert_chunks(chunks: list[dict], vectors: list[list[float]]) -> int:
@@ -54,11 +65,17 @@ def upsert_chunks(chunks: list[dict], vectors: list[list[float]]) -> int:
     Returns:
         Number of points upserted
     """
+    if len(chunks) != len(vectors):
+        raise ValueError("chunks and vectors must have the same length")
     ensure_collection()
 
     points = []
     for chunk, vector in zip(chunks, vectors):
-        point_id = str(uuid.uuid4())
+        metadata = chunk["metadata"]
+        point_id = str(uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"rag:{metadata['doc_id']}:{metadata['chunk_index']}",
+        ))
         payload = {
             "text": chunk["text"],
             **chunk["metadata"],
@@ -78,7 +95,11 @@ def upsert_chunks(chunks: list[dict], vectors: list[list[float]]) -> int:
     return len(points)
 
 
-def search(query_vector: list[float], top_k: int | None = None) -> list[dict]:
+def search(
+    query_vector: list[float],
+    top_k: int | None = None,
+    doc_ids: list[str] | None = None,
+) -> list[dict]:
     """
     Search for the most similar chunks to a query vector.
 
@@ -89,8 +110,16 @@ def search(query_vector: list[float], top_k: int | None = None) -> list[dict]:
     Returns:
         List of dicts with keys: text, metadata, score
     """
-    top_k = top_k or settings.top_k
+    top_k = settings.top_k if top_k is None else top_k
+    if not 1 <= top_k <= 10:
+        raise ValueError("top_k must be between 1 and 10")
     ensure_collection()
+
+    query_filter = None
+    if doc_ids:
+        query_filter = Filter(must=[
+            FieldCondition(key="doc_id", match=MatchAny(any=doc_ids)),
+        ])
 
     results = _client.query_points(
         collection_name=settings.collection_name,
@@ -98,13 +127,14 @@ def search(query_vector: list[float], top_k: int | None = None) -> list[dict]:
         limit=top_k,
         score_threshold=settings.score_threshold,
         with_payload=True,
+        query_filter=query_filter,
     )
 
     hits = []
     for point in results.points:
-        payload = point.payload
+        payload = dict(point.payload or {})
         hits.append({
-            "text": payload.pop("text"),
+            "text": payload.get("text", ""),
             "metadata": {
                 "source_file": payload.get("source_file", ""),
                 "page_number": payload.get("page_number", 0),

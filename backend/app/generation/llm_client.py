@@ -6,7 +6,7 @@ via the LLM_PROVIDER env var ("openai" or "claude").
 """
 
 from app.config import settings
-from app.generation.prompts import SYSTEM_PROMPT, build_context_prompt
+from app.generation.prompts import SYSTEM_PROMPT, build_context_prompt, remove_invalid_citations
 
 
 def _generate_openai(user_message: str) -> str:
@@ -14,14 +14,17 @@ def _generate_openai(user_message: str) -> str:
 
     client = OpenAI(api_key=settings.openai_api_key)
     response = client.chat.completions.create(
-        model="gpt-4o-mini",
+        model=settings.openai_model,
         max_tokens=1024,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_message},
         ],
     )
-    return response.choices[0].message.content
+    content = response.choices[0].message.content
+    if not content:
+        raise RuntimeError("OpenAI returned an empty response")
+    return content
 
 
 def _generate_claude(user_message: str) -> str:
@@ -29,12 +32,15 @@ def _generate_claude(user_message: str) -> str:
 
     client = Anthropic(api_key=settings.anthropic_api_key)
     response = client.messages.create(
-        model="claude-sonnet-4-20250514",
+        model=settings.anthropic_model,
         max_tokens=1024,
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": user_message}],
     )
-    return response.content[0].text
+    for block in response.content:
+        if getattr(block, "type", None) == "text" and block.text:
+            return block.text
+    raise RuntimeError("Anthropic returned an empty response")
 
 
 def generate_answer(question: str, chunks: list[dict]) -> str:
@@ -49,8 +55,12 @@ def generate_answer(question: str, chunks: list[dict]) -> str:
         LLM answer with [1], [2] source citations
     """
     user_message = build_context_prompt(question, chunks)
+    included_sources = user_message.count('<source id="')
 
     if settings.llm_provider == "claude":
-        return _generate_claude(user_message)
-    else:
-        return _generate_openai(user_message)
+        if not settings.anthropic_api_key:
+            raise RuntimeError("ANTHROPIC_API_KEY is not configured")
+        return remove_invalid_citations(_generate_claude(user_message), included_sources)
+    if not settings.openai_api_key:
+        raise RuntimeError("OPENAI_API_KEY is not configured")
+    return remove_invalid_citations(_generate_openai(user_message), included_sources)

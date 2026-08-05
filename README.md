@@ -2,6 +2,8 @@
 
 A production-quality Retrieval-Augmented Generation system built **from scratch** — no LangChain, no LlamaIndex. Every layer (chunking, embedding, retrieval, generation) is hand-written for full understanding and control.
 
+The current implementation includes guarded public-URL ingestion, bounded uploads and LLM context, idempotent vector writes, isolated auto-research retrieval, optional API-key protection, a shared async API/MCP service layer, production Nginx frontend serving, Docker health checks, and backend/frontend regression tests.
+
 ## What It Does
 
 Upload documents — ArXiv papers, PDFs, web pages, or text files — and ask questions about them. The system retrieves relevant passages using vector similarity search and generates cited answers using an LLM (OpenAI or Claude, configurable).
@@ -61,7 +63,7 @@ The system extracted the article text from Wikipedia (stripping navigation, ads,
 
 ```
 ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
-│   React UI   │────▶│   FastAPI    │────▶│   Qdrant     │
+│ React/Nginx  │────▶│   FastAPI    │────▶│   Qdrant     │
 │  (Tailwind)  │◀────│   Backend    │◀────│  (Vectors)   │
 │  port 5173   │     │  port 8000   │     │  port 6333   │
 └──────────────┘     └──────┬───────┘     └──────────────┘
@@ -114,6 +116,7 @@ backend/
 
 - [Docker](https://docs.docker.com/get-docker/) and Docker Compose
 - An **OpenAI API key** (GPT-4o-mini, ~$0.0005/query) or **Anthropic API key** (Claude Sonnet)
+- Optional: Node.js 20+ and npm for frontend development and unit tests outside Docker
 
 ## Quick Start
 
@@ -126,15 +129,36 @@ cd rag-knowledge-assistant
 cp .env.example .env
 # Edit .env — add your API key and set LLM_PROVIDER to "openai" or "claude"
 
-# 3. Run everything (Qdrant + backend + frontend + MCP server)
-docker compose up --build
+# 3. Build and start everything in the background
+docker compose up --build -d
 
-# 4. Open the UI
+# 4. Confirm the services started
+docker compose ps
+
+# 5. Open the UI
 # Frontend:  http://localhost:5173
 # API docs:  http://localhost:8000/docs
 # Qdrant:    http://localhost:6333/dashboard
 # MCP:       http://localhost:8811/mcp (for AI assistant integration)
 ```
+
+The first ingestion or query may take longer while the local embedding model downloads and loads. Follow logs with `docker compose logs -f`; rebuild after backend, dependency, environment, or production frontend changes with `docker compose up --build -d`. Stop the application with `docker compose down`. Qdrant vectors and downloaded documents persist in `qdrant_storage/` and `data/`; `docker compose down` does not delete them.
+
+### Configuration
+
+The most commonly changed `.env` values are:
+
+| Variable | Purpose |
+|----------|---------|
+| `LLM_PROVIDER` | `openai` or `claude` |
+| `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | Key for the selected generation provider |
+| `CHUNK_SIZE` / `CHUNK_OVERLAP` | Chunk sizing; overlap must be smaller than chunk size |
+| `TOP_K` / `SCORE_THRESHOLD` | Retrieval count and similarity cutoff |
+| `MAX_UPLOAD_BYTES` / `MAX_WEB_BYTES` / `MAX_PDF_BYTES` | Ingestion safety limits |
+| `APP_API_KEY` / `VITE_API_KEY` | Optional matching keys for local API protection |
+| `CORS_ORIGINS` | Comma-separated browser origins allowed to call the API |
+
+When `VITE_API_KEY` changes, rebuild the frontend image. It is embedded in the browser bundle and is therefore only a local access deterrent, not a substitute for user authentication.
 
 ## Supported Document Types
 
@@ -184,6 +208,8 @@ curl -X POST http://localhost:8000/api/query \
   -H "Content-Type: application/json" \
   -d '{"question": "What were the main findings?", "top_k": 5}'
 ```
+
+If `APP_API_KEY` is configured, add `-H "X-API-Key: your-key"` to stats, ingestion, and query requests. Do not add it to the health request.
 
 ## MCP Server (AI Assistant Integration)
 
@@ -297,6 +323,51 @@ claude mcp add -e QDRANT_HOST=localhost -e QDRANT_PORT=6333 \
 
 This requires Qdrant running locally and Python dependencies installed on the host.
 
+## Safety and Runtime Behavior
+
+- Docker ports bind to `127.0.0.1` by default. Put an authenticated TLS reverse proxy in front of the services before exposing them remotely.
+- Compose serves the compiled frontend through unprivileged Nginx. Source changes require `docker compose up --build`; use `npm run dev` for frontend hot reload.
+- Set `APP_API_KEY` and the matching `VITE_API_KEY` to require `X-API-Key` on stats, ingestion, and query API calls. Health remains public for container probes.
+- Web ingestion accepts public HTTP(S) destinations only, revalidates redirects, rejects private/link-local/reserved addresses, and caps downloaded content at 5 MB.
+- Uploads must be exactly one PDF, TXT, or Markdown file and are capped at 25 MB. PDF signatures are validated; scanned PDFs still require an external OCR step.
+- Identical source content receives stable document and vector IDs, so retrying the same ingestion replaces those vector points instead of growing duplicates.
+- Auto-research answers are filtered to the documents ingested by that tool call; unrelated existing collection content is excluded.
+- The local embedding model is loaded lazily on the first ingest or query. The first call can therefore take longer while the model cache is populated.
+
+## Tests and Evaluation
+
+Run the test suites from the repository root after creating `.env`:
+
+```bash
+# Backend unit, API, security, retrieval, service, and MCP tests (40 tests)
+docker compose run --rm --no-deps backend pytest -q
+
+# Frontend component tests (requires Node.js 20+)
+cd frontend
+npm ci
+npm test
+
+# Type-check and produce the same frontend bundle used by Docker
+npm run build
+cd ..
+
+# Validate Compose and build all production images
+docker compose config --quiet
+docker compose build
+
+# Smoke-test a running stack
+curl --fail http://localhost:8000/api/health
+curl --fail http://localhost:5173/api/health
+
+# Corpus-specific retrieval hit-rate evaluation
+docker compose exec backend python eval/eval_retrieval.py \
+  --doc-id YOUR_FIXTURE_DOC_ID --min-hit-rate 0.7
+```
+
+The backend tests do not require a live Qdrant instance because external services are isolated in unit tests. The retrieval evaluation does require a running stack and an already-ingested matching fixture document. Its metric is hit rate at *k*: a question is a hit when at least one expected term appears in the retrieved top-*k*. It is a lightweight retrieval regression signal, not precision or end-to-end answer-quality scoring.
+
+For a quick manual functional test, open `http://localhost:5173`, upload a small PDF/TXT/Markdown file, wait for the ingestion result, and ask a question whose answer appears in that file. Confirm that the answer includes expandable source cards with the expected document, page/section metadata, and similarity scores.
+
 ## Project Structure
 
 ```
@@ -309,15 +380,18 @@ rag-knowledge-assistant/
 │   ├── requirements.txt
 │   ├── main.py                 FastAPI entry point
 │   ├── mcp_server.py           MCP server entry point (7 tools)
+│   ├── tests/                  Unit, API, security, and orchestration tests
 │   └── app/
 │       ├── config.py           Pydantic Settings (.env loader)
 │       ├── models.py           Shared request/response schemas
+│       ├── service.py          Shared async API/MCP orchestration
 │       ├── ingestion/          PDF, ArXiv, web, text/markdown loading + chunking
 │       │   ├── pdf_loader.py       PyMuPDF text extraction
 │       │   ├── arxiv_fetcher.py    ArXiv PDF downloader
 │       │   ├── arxiv_search.py     ArXiv API search
 │       │   ├── web_loader.py       Web page fetcher (trafilatura)
 │       │   ├── web_search.py       DuckDuckGo search
+│       │   ├── url_safety.py       Public URL/DNS/redirect validation
 │       │   ├── text_loader.py      Plain text / markdown loader
 │       │   └── chunker.py          Section-aware + plain chunking
 │       ├── embedding/          Vector encoding (sentence-transformers)
@@ -326,6 +400,8 @@ rag-knowledge-assistant/
 │       └── api/                Route handlers
 ├── frontend/
 │   ├── Dockerfile
+│   ├── nginx.conf              Production SPA serving + /api proxy
+│   ├── package-lock.json       Reproducible frontend dependencies
 │   └── src/
 │       ├── App.tsx             Main layout (sidebar + chat)
 │       ├── api/client.ts       API client (ingest, query, stats)
@@ -344,7 +420,7 @@ rag-knowledge-assistant/
 - **Chunking:** Semantic chunking using embedding similarity, not just text boundaries
 - **Reranking:** Cross-encoder reranker between retrieval and generation
 - **Vector DB:** Managed Qdrant Cloud or Pinecone for scale + backups
-- **Auth:** API keys or OAuth on all endpoints
+- **Auth:** Replace the optional single API key with per-user OAuth/JWT and authorization
 - **Ingestion:** Async job queue (Celery/Redis) for large batch processing
 - **Observability:** Structured logging, latency metrics, retrieval quality monitoring
 - **Streaming:** Server-sent events for real-time answer generation
@@ -359,13 +435,13 @@ I built every layer of this RAG system from scratch — no LangChain, no LlamaIn
 
 **Citation-grounded generation.** I engineered the prompt to instruct the LLM to answer only from the provided context and cite sources using [1], [2] notation. Each retrieved chunk is labeled with its source file, page number, and section title. If the retrieval returns nothing relevant, the system says "I don't have enough information" rather than hallucinating — this is a deliberate design choice. The generation layer supports both OpenAI (GPT-4o-mini) and Claude (Sonnet), configurable via a single environment variable.
 
-**Quantitative evaluation.** I wrote an evaluation harness with 10 test questions and expected section keywords. The system achieves 70% retrieval precision — a solid baseline that identifies exactly where improvements are needed (vocabulary mismatch on generic queries). The misses informed my understanding of when reranking and query expansion become necessary.
+**Quantitative evaluation.** I wrote an evaluation harness with 10 test questions and expected section keywords. Its baseline is a 70% retrieval hit rate at five results—not precision—and it can be restricted to a fixture document and fail CI below a configured threshold. The misses identify where reranking and query expansion become necessary.
 
 **Architecture decisions.** I chose a modular monolith — single FastAPI service with clear module boundaries (ingestion, embedding, retrieval, generation, API). Routes are deliberately thin — they validate input and delegate to modules. All configuration flows through Pydantic BaseSettings. I chose ArXiv papers as test data intentionally: they're open access (no licensing issues), well-structured (good for learning chunking), and make the demo credible to a technical audience.
 
 **MCP server for AI assistant integration.** I wrapped the entire RAG pipeline as an MCP (Model Context Protocol) server using the FastMCP SDK. This means Claude Code or any MCP-compatible AI assistant can query my knowledge base, ingest new documents, and search for information — all as tool calls. The MCP server imports the same backend modules directly (zero code duplication), and I designed multiple tools at different cost tiers: `query_knowledge_base` (generates a full cited answer, ~$0.0005), `search_chunks` (returns raw chunks without an LLM call, completely free), and two auto-research tools that combine search, ingestion, and RAG into a single call.
 
-**Auto-research tools.** I built two research tools that make the knowledge base self-expanding. `research_papers` searches ArXiv's free API for academic papers matching a question, downloads and ingests the top results with section-aware chunking optimized for academic content, then queries the enriched knowledge base for a cited answer. `research` does the same but for general web content — it searches DuckDuckGo, extracts article text with trafilatura, and ingests the results. The key insight is that ingested content persists in Qdrant, so the knowledge base grows smarter over time without manual curation. I chose to build both tools because academic papers and web pages have fundamentally different structure — ArXiv papers benefit from section-aware chunking that detects numbered headers and strips bibliographies, while web pages need boilerplate removal and markdown-style heading detection. Having two tools lets the AI assistant pick the right one based on the question type.
+**Auto-research tools.** I built two research tools that make the knowledge base self-expanding. `research_papers` searches ArXiv's free API for academic papers matching a question, downloads and ingests the top results with section-aware chunking optimized for academic content, then queries only those newly ingested documents for a cited answer. `research` does the same for general web content, with public-network URL validation and trafilatura extraction. Ingested content persists in Qdrant for future direct queries, while each research answer remains isolated from unrelated older documents.
 
 **Broader document support.** I extended the system beyond just ArXiv papers to support web pages (using trafilatura for intelligent content extraction), plain text, and markdown files. The key challenge was chunking: academic papers have numbered sections and bibliography sections to strip, but web pages and markdown have different structure. Rather than adding flags to the existing chunker, I wrote a separate `chunk_plain_document()` that uses markdown heading detection and paragraph-based splitting — keeping each chunker optimized for its domain with zero regression risk to the original PDF pipeline.
 

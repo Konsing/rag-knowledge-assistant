@@ -17,8 +17,9 @@ Modular monolith — single FastAPI backend with clear module boundaries:
 - `docker compose up` — run everything (Qdrant + backend + frontend)
 - `docker compose up --build` — rebuild and run
 - `docker compose up mcp-server` — run MCP server (port 8811)
-- `docker compose exec backend python -m eval.eval_retrieval` — run retrieval evaluation
+- `docker compose exec backend python eval/eval_retrieval.py` — run retrieval evaluation
 - `cd backend && pytest` — run backend tests
+- `cd frontend && npm test && npm run build` — run frontend tests and type/build checks
 
 ## MCP Server
 - Configured in `.mcp.json` for Claude Code (streamable-http on port 8811)
@@ -37,3 +38,6 @@ Modular monolith — single FastAPI backend with clear module boundaries:
 - Shared Pydantic models in `backend/app/models.py`
 - Each module owns its logic and has explicit interfaces
 - MCP server reuses backend modules via direct import (no duplication)
+- User-provided web URLs must pass public-network validation on every redirect
+- Ingestion is idempotent for identical source content via deterministic IDs
+- Auto-research retrieval must remain filtered to the document IDs ingested by that call

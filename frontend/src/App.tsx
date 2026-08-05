@@ -6,7 +6,7 @@ function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   return (
-    <div className="h-screen flex flex-col bg-[#191919] text-[#eee]">
+    <div className="h-[100dvh] flex flex-col bg-[#191919] text-[#eee]">
       {/* Main layout */}
       <div className="flex-1 flex overflow-hidden relative">
         {/* Mobile overlay */}
@@ -39,6 +39,7 @@ function App() {
               <button
                 onClick={() => setSidebarOpen(false)}
                 className="md:hidden p-1.5 rounded-md hover:bg-[#222] transition-colors"
+                aria-label="Close ingestion sidebar"
               >
                 <svg className="w-5 h-5 text-[#777]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -59,6 +60,7 @@ function App() {
             <button
               onClick={() => setSidebarOpen(true)}
               className="p-2 rounded-md hover:bg-[#222] transition-colors"
+              aria-label="Open ingestion sidebar"
             >
               <svg className="w-6 h-6 text-[#aaa]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" />

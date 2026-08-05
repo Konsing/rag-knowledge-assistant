@@ -4,6 +4,7 @@ Ingestion pipeline: fetch/load documents -> extract text -> chunk with metadata.
 Supports PDFs (local + ArXiv), plain text, markdown, and web pages.
 """
 
+import asyncio
 import os
 
 from app.ingestion.arxiv_fetcher import fetch_arxiv_pdf
@@ -21,8 +22,8 @@ async def ingest_pdf(file_path: str, filename: str) -> list[dict]:
 
     Returns list of chunks with metadata, ready for embedding.
     """
-    pages = extract_text_from_pdf(file_path)
-    chunks = chunk_document(pages, source_file=filename)
+    pages = await asyncio.to_thread(extract_text_from_pdf, file_path)
+    chunks = await asyncio.to_thread(chunk_document, pages, source_file=filename)
     return chunks
 
 
@@ -37,8 +38,8 @@ async def ingest_arxiv_url(url: str) -> tuple[list[dict], str]:
     """
     local_path = await fetch_arxiv_pdf(url)
     filename = os.path.basename(local_path)
-    pages = extract_text_from_pdf(local_path)
-    chunks = chunk_document(pages, source_file=filename)
+    pages = await asyncio.to_thread(extract_text_from_pdf, local_path)
+    chunks = await asyncio.to_thread(chunk_document, pages, source_file=filename)
     return chunks, filename
 
 
@@ -48,8 +49,8 @@ async def ingest_text_file(file_path: str, filename: str) -> list[dict]:
 
     Returns list of chunks with metadata, ready for embedding.
     """
-    pages = extract_text_from_file(file_path)
-    chunks = chunk_plain_document(pages, source_file=filename)
+    pages = await asyncio.to_thread(extract_text_from_file, file_path)
+    chunks = await asyncio.to_thread(chunk_plain_document, pages, source_file=filename)
     return chunks
 
 
@@ -64,5 +65,5 @@ async def ingest_web_url(url: str) -> tuple[list[dict], str]:
         (chunks, url) - chunks ready for embedding, and the source URL
     """
     pages = await fetch_web_page(url)
-    chunks = chunk_plain_document(pages, source_file=url)
+    chunks = await asyncio.to_thread(chunk_plain_document, pages, source_file=url)
     return chunks, url

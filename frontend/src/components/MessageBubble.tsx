@@ -9,7 +9,7 @@ interface Message {
 }
 
 function ScoreBar({ score }: { score: number }) {
-  const pct = Math.round(score * 100);
+  const pct = Math.max(0, Math.min(100, Math.round(score * 100)));
 
   return (
     <div className="flex items-center gap-2">
@@ -26,6 +26,7 @@ function ScoreBar({ score }: { score: number }) {
 
 export default function MessageBubble({ message }: { message: Message }) {
   const [showSources, setShowSources] = useState(false);
+  const [expandedSource, setExpandedSource] = useState<number | null>(null);
 
   return (
     <div className="animate-fade-in">
@@ -47,6 +48,7 @@ export default function MessageBubble({ message }: { message: Message }) {
             <button
               onClick={() => setShowSources(!showSources)}
               className="inline-flex items-center gap-2 text-[15px] text-[#888] hover:text-[#bbb] transition-colors"
+              aria-expanded={showSources}
             >
               <svg
                 className={`w-4 h-4 transition-transform duration-200 ${showSources ? "rotate-90" : ""}`}
@@ -62,15 +64,22 @@ export default function MessageBubble({ message }: { message: Message }) {
                 {message.sources.map((source, i) => (
                   <div
                     key={i}
-                    className="group relative bg-[#1e1e1e] border border-[#2a2a2a] rounded-lg px-4 py-3 hover:border-[#444] transition-colors"
+                    className="bg-[#1e1e1e] border border-[#2a2a2a] rounded-lg px-4 py-3 hover:border-[#444] transition-colors"
                   >
-                    <div className="flex items-center gap-2.5">
-                      <span className="text-[14px] text-[#666] font-medium">{i + 1}</span>
-                      <span className="text-[15px] text-[#aaa] truncate max-w-[200px]">
-                        {source.metadata.source_file}
-                      </span>
-                      <ScoreBar score={source.score} />
-                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setExpandedSource(expandedSource === i ? null : i)}
+                      className="w-full text-left"
+                      aria-expanded={expandedSource === i}
+                    >
+                      <div className="flex items-center gap-2.5">
+                        <span className="text-[14px] text-[#666] font-medium">{i + 1}</span>
+                        <span className="text-[15px] text-[#aaa] truncate max-w-[200px]">
+                          {source.metadata.source_file}
+                        </span>
+                        <ScoreBar score={source.score} />
+                      </div>
+                    </button>
                     {(source.metadata.page_number > 0 || source.metadata.section_title) && (
                       <div className="text-[13px] text-[#666] mt-1.5">
                         {source.metadata.page_number > 0 && <span>p.{source.metadata.page_number}</span>}
@@ -78,12 +87,24 @@ export default function MessageBubble({ message }: { message: Message }) {
                         {source.metadata.section_title && <span>{source.metadata.section_title}</span>}
                       </div>
                     )}
-                    {/* Hover preview */}
-                    <div className="hidden group-hover:block absolute left-0 top-full mt-1.5 z-10 w-96 bg-[#1e1e1e] border border-[#444] rounded-lg p-4 shadow-lg shadow-black/30">
+                    {(source.metadata.source_file.startsWith("http://") ||
+                      source.metadata.source_file.startsWith("https://")) && (
+                      <a
+                        href={source.metadata.source_file}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-block mt-2 text-[13px] text-[#aaa] underline underline-offset-2"
+                      >
+                        Open source
+                      </a>
+                    )}
+                    {expandedSource === i && (
+                      <div className="mt-3 border-t border-[#333] pt-3">
                       <p className="text-[14px] text-[#aaa] leading-relaxed line-clamp-4">
                         {source.text}
                       </p>
-                    </div>
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>

@@ -1,6 +1,5 @@
 const BASE_URL = "/api";
-
-// --- Types mirroring backend Pydantic models ---
+const API_KEY = import.meta.env.VITE_API_KEY as string | undefined;
 
 export interface ChunkMetadata {
   source_file: string;
@@ -33,83 +32,84 @@ export interface CollectionStats {
   points_count: number;
 }
 
-// --- API functions ---
+async function apiRequest<T>(
+  path: string,
+  init: RequestInit = {},
+  timeoutMs = 30_000,
+): Promise<T> {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  const headers = new Headers(init.headers);
+  if (API_KEY) headers.set("X-API-Key", API_KEY);
 
-export async function healthCheck(): Promise<{ status: string }> {
-  const res = await fetch(`${BASE_URL}/health`);
-  return res.json();
+  try {
+    const response = await fetch(`${BASE_URL}${path}`, {
+      ...init,
+      headers,
+      signal: controller.signal,
+    });
+    const body = await response.text();
+    let parsed: unknown = null;
+    if (body) {
+      try {
+        parsed = JSON.parse(body);
+      } catch {
+        parsed = body;
+      }
+    }
+
+    if (!response.ok) {
+      const detail =
+        typeof parsed === "object" && parsed !== null && "detail" in parsed
+          ? String((parsed as { detail: unknown }).detail)
+          : `Request failed with status ${response.status}`;
+      throw new Error(detail);
+    }
+    return parsed as T;
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new Error("Request timed out. The document or query may be too large.");
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeout);
+  }
 }
 
-export async function getStats(): Promise<CollectionStats> {
-  const res = await fetch(`${BASE_URL}/stats`);
-  return res.json();
+export function healthCheck(): Promise<{ status: string }> {
+  return apiRequest("/health");
 }
 
-export async function ingestArxivUrl(url: string): Promise<IngestResponse> {
+export function getStats(): Promise<CollectionStats> {
+  return apiRequest("/stats");
+}
+
+export function ingestArxivUrl(url: string): Promise<IngestResponse> {
   const form = new FormData();
   form.append("arxiv_url", url);
-
-  const res = await fetch(`${BASE_URL}/ingest`, {
-    method: "POST",
-    body: form,
-  });
-
-  if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.detail || "Ingestion failed");
-  }
-
-  return res.json();
+  return apiRequest("/ingest", { method: "POST", body: form }, 120_000);
 }
 
-export async function ingestPdf(file: File): Promise<IngestResponse> {
+export function ingestFile(file: File): Promise<IngestResponse> {
   const form = new FormData();
   form.append("file", file);
-
-  const res = await fetch(`${BASE_URL}/ingest`, {
-    method: "POST",
-    body: form,
-  });
-
-  if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.detail || "Ingestion failed");
-  }
-
-  return res.json();
+  return apiRequest("/ingest", { method: "POST", body: form }, 120_000);
 }
 
-export async function ingestWebUrl(url: string): Promise<IngestResponse> {
+export function ingestWebUrl(url: string): Promise<IngestResponse> {
   const form = new FormData();
   form.append("url", url);
-
-  const res = await fetch(`${BASE_URL}/ingest`, {
-    method: "POST",
-    body: form,
-  });
-
-  if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.detail || "Ingestion failed");
-  }
-
-  return res.json();
+  return apiRequest("/ingest", { method: "POST", body: form }, 120_000);
 }
 
-export async function queryKnowledgeBase(
-  question: string,
-  topK: number = 5
-): Promise<QueryResponse> {
-  const res = await fetch(`${BASE_URL}/query`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ question, top_k: topK }),
-  });
-
-  if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.detail || "Query failed");
-  }
-
-  return res.json();
+export function queryKnowledgeBase(question: string, topK = 5): Promise<QueryResponse> {
+  return apiRequest(
+    "/query",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question, top_k: topK }),
+    },
+    90_000,
+  );
 }

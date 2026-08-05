@@ -20,6 +20,7 @@ export default function ChatWindow() {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [pendingQuestion, setPendingQuestion] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -38,6 +39,7 @@ export default function ChatWindow() {
     if (!question || loading) return;
     setInput("");
     setError(null);
+    setPendingQuestion(question);
     setLoading(true);
     try {
       const response = await queryKnowledgeBase(question);
@@ -47,8 +49,10 @@ export default function ChatWindow() {
       ]);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Query failed");
+      setInput(question);
     } finally {
       setLoading(false);
+      setPendingQuestion(null);
     }
   }
 
@@ -68,7 +72,7 @@ export default function ChatWindow() {
     <div className="flex flex-col h-full">
       {/* Messages area */}
       <div className="flex-1 overflow-y-auto scrollbar-thin">
-        {messages.length === 0 && !loading ? (
+        {messages.length === 0 && !loading && !error ? (
           <div className="flex flex-col items-center justify-center h-full px-10">
             <div className="max-w-xl text-center">
               <div className="mx-auto w-16 h-16 rounded-xl bg-[#222] border border-[#2a2a2a] flex items-center justify-center mb-6">
@@ -106,19 +110,27 @@ export default function ChatWindow() {
             ))}
 
             {loading && (
-              <div className="py-6 animate-fade-in">
-                <div className="text-[15px] text-[#888] mb-2.5">Assistant</div>
-                <div className="flex items-center gap-2.5">
-                  <div className="w-2.5 h-2.5 bg-[#777] rounded-full typing-dot" />
-                  <div className="w-2.5 h-2.5 bg-[#777] rounded-full typing-dot" />
-                  <div className="w-2.5 h-2.5 bg-[#777] rounded-full typing-dot" />
-                  <span className="ml-2 text-[15px] text-[#666]">Searching & generating...</span>
+              <div className="animate-fade-in" aria-live="polite">
+                {pendingQuestion && (
+                  <div className="py-6">
+                    <div className="text-[15px] text-[#888] mb-2">You</div>
+                    <p className="text-[18px] text-[#eee] leading-relaxed">{pendingQuestion}</p>
+                  </div>
+                )}
+                <div className="py-6 border-t border-[#222]">
+                  <div className="text-[15px] text-[#888] mb-2.5">Assistant</div>
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-2.5 h-2.5 bg-[#777] rounded-full typing-dot" />
+                    <div className="w-2.5 h-2.5 bg-[#777] rounded-full typing-dot" />
+                    <div className="w-2.5 h-2.5 bg-[#777] rounded-full typing-dot" />
+                    <span className="ml-2 text-[15px] text-[#666]">Searching & generating...</span>
+                  </div>
                 </div>
               </div>
             )}
 
             {error && (
-              <div className="rounded-lg bg-[#2a1515] border border-[#3a2020] px-5 py-4 text-[15px] text-[#f99] animate-fade-in">
+              <div role="alert" className="rounded-lg bg-[#2a1515] border border-[#3a2020] px-5 py-4 text-[15px] text-[#f99] animate-fade-in">
                 {error}
               </div>
             )}

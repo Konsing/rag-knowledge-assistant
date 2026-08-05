@@ -7,7 +7,7 @@ splitting when section headers aren't detected.
 """
 
 import re
-import uuid
+import hashlib
 
 from app.config import settings
 
@@ -66,18 +66,28 @@ def _detect_sections(text: str) -> list[dict]:
         headers = list(re.finditer(pattern, text))
         if MIN_SECTIONS <= len(headers) <= MAX_SECTIONS:
             sections = _headers_to_sections(headers, text)
-            # Filter out tiny sections (likely false positive headers)
-            sections = [s for s in sections if len(s["text"]) >= MIN_SECTION_LENGTH]
+            sections = _merge_short_sections(sections)
             if len(sections) >= 2:
                 return sections
 
     # Fallback: no reliable sections detected — treat as one block
-    return [{"title": "Full Document", "text": text}]
+    return [{"title": "Full Document", "text": text, "start": 0, "end": len(text)}]
 
 
 def _headers_to_sections(headers: list, text: str) -> list[dict]:
     """Convert regex header matches into section dicts."""
     sections = []
+    if headers and headers[0].start() > 0:
+        preamble = text[:headers[0].start()].strip()
+        if preamble:
+            preamble_start = text.find(preamble)
+            sections.append({
+                "title": "Preamble",
+                "text": preamble,
+                "start": preamble_start,
+                "end": preamble_start + len(preamble),
+            })
+
     for i, header in enumerate(headers):
         title = header.group().strip()
         start = header.end()
@@ -85,9 +95,34 @@ def _headers_to_sections(headers: list, text: str) -> list[dict]:
         section_text = text[start:end].strip()
 
         if section_text:
-            sections.append({"title": title, "text": section_text})
+            text_start = text.find(section_text, start, end)
+            sections.append({
+                "title": title,
+                "text": section_text,
+                "start": text_start,
+                "end": text_start + len(section_text),
+            })
 
     return sections
+
+
+def _merge_short_sections(sections: list[dict]) -> list[dict]:
+    """Merge short sections into a neighbor instead of discarding their content."""
+    merged: list[dict] = []
+    for section in sections:
+        if len(section["text"]) >= MIN_SECTION_LENGTH or not merged:
+            merged.append(section.copy())
+            continue
+
+        previous = merged[-1]
+        previous["text"] = f"{previous['text']}\n\n{section['title']}\n{section['text']}"
+        previous["end"] = section["end"]
+
+    if len(merged) > 1 and len(merged[0]["text"]) < MIN_SECTION_LENGTH:
+        first = merged.pop(0)
+        merged[0]["text"] = f"{first['text']}\n\n{merged[0]['text']}"
+        merged[0]["start"] = first["start"]
+    return merged
 
 
 def _split_into_chunks(
@@ -126,6 +161,21 @@ def _split_into_chunks(
             sentences = re.split(r"(?<=[.!?])\s+", para)
             for sentence in sentences:
                 sent_tokens = _estimate_tokens(sentence)
+                if sent_tokens > chunk_size:
+                    if current_chunk_parts:
+                        chunks.append(" ".join(current_chunk_parts))
+                        current_chunk_parts = []
+                        current_tokens = 0
+                    max_chars = chunk_size * 4
+                    overlap_chars = chunk_overlap * 4
+                    step = max(1, max_chars - overlap_chars)
+                    for start in range(0, len(sentence), step):
+                        piece = sentence[start:start + max_chars]
+                        if piece:
+                            chunks.append(piece)
+                        if start + max_chars >= len(sentence):
+                            break
+                    continue
                 if current_tokens + sent_tokens > chunk_size and current_chunk_parts:
                     chunks.append(" ".join(current_chunk_parts))
                     # Keep overlap worth of text
@@ -159,7 +209,7 @@ def _split_into_chunks(
 
 
 # Markdown heading patterns for non-academic documents
-MARKDOWN_HEADING_PATTERN = r"\n#{1,3}\s+.+\n"
+MARKDOWN_HEADING_PATTERN = r"(?m)^#{1,3}\s+.+$"
 
 
 def _detect_markdown_sections(text: str) -> list[dict]:
@@ -172,11 +222,24 @@ def _detect_markdown_sections(text: str) -> list[dict]:
     headers = list(re.finditer(MARKDOWN_HEADING_PATTERN, text))
     if len(headers) >= 2:
         sections = _headers_to_sections(headers, text)
-        sections = [s for s in sections if len(s["text"]) >= MIN_SECTION_LENGTH]
+        sections = _merge_short_sections(sections)
         if len(sections) >= 2:
             return sections
 
-    return [{"title": "Full Document", "text": text}]
+    return [{"title": "Full Document", "text": text, "start": 0, "end": len(text)}]
+
+
+def _document_id(source_file: str, text: str) -> str:
+    """Create a stable ID so re-ingesting identical content is idempotent."""
+    digest = hashlib.sha256(f"{source_file}\0{text}".encode("utf-8")).hexdigest()
+    return digest[:16]
+
+
+def _validate_chunk_parameters(chunk_size: int, chunk_overlap: int) -> None:
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be positive")
+    if chunk_overlap < 0 or chunk_overlap >= chunk_size:
+        raise ValueError("chunk_overlap must be non-negative and smaller than chunk_size")
 
 
 def chunk_plain_document(
@@ -201,13 +264,14 @@ def chunk_plain_document(
     Returns:
         List of dicts with keys: text, metadata
     """
-    chunk_size = chunk_size or settings.chunk_size
-    chunk_overlap = chunk_overlap or settings.chunk_overlap
+    chunk_size = settings.chunk_size if chunk_size is None else chunk_size
+    chunk_overlap = settings.chunk_overlap if chunk_overlap is None else chunk_overlap
+    _validate_chunk_parameters(chunk_size, chunk_overlap)
 
     full_text = "\n".join(p["text"] for p in pages)
     sections = _detect_markdown_sections(full_text)
 
-    doc_id = str(uuid.uuid4())[:8]
+    doc_id = _document_id(source_file, full_text)
     all_chunks = []
     chunk_index = 0
 
@@ -256,8 +320,9 @@ def chunk_document(
     Returns:
         List of dicts with keys: text, metadata (ChunkMetadata fields)
     """
-    chunk_size = chunk_size or settings.chunk_size
-    chunk_overlap = chunk_overlap or settings.chunk_overlap
+    chunk_size = settings.chunk_size if chunk_size is None else chunk_size
+    chunk_overlap = settings.chunk_overlap if chunk_overlap is None else chunk_overlap
+    _validate_chunk_parameters(chunk_size, chunk_overlap)
 
     # Combine all pages into one text, tracking page boundaries
     full_text = ""
@@ -275,7 +340,7 @@ def chunk_document(
     sections = _detect_sections(full_text)
 
     # Generate a unique document ID
-    doc_id = str(uuid.uuid4())[:8]
+    doc_id = _document_id(source_file, full_text)
 
     # Chunk each section, then assign page numbers from boundaries
     all_chunks = []
@@ -286,15 +351,22 @@ def chunk_document(
             section["text"], chunk_size, chunk_overlap
         )
 
+        search_from = section["start"]
         for chunk_text in section_chunks:
             # Find which page this chunk starts on by matching position
             # in the original text
-            chunk_start = full_text.find(chunk_text[:100])
+            lookup_start = max(section["start"], search_from - chunk_overlap * 4)
+            chunk_start = full_text.find(chunk_text[:100], lookup_start, section["end"])
             page_num = 1  # default
             for start, end, pnum in page_boundaries:
                 if start <= chunk_start < end:
                     page_num = pnum
                     break
+            if chunk_start >= 0:
+                search_from = max(
+                    chunk_start + 1,
+                    chunk_start + len(chunk_text) - chunk_overlap * 4,
+                )
 
             # Skip tiny chunks — they have no useful content for retrieval
             if len(chunk_text.strip()) < 50:

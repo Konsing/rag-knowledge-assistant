@@ -1,115 +1,161 @@
-"""
-FastAPI routes — thin delegation layer.
+"""FastAPI routes for ingestion, retrieval, and service health."""
 
-Each endpoint validates input, calls the appropriate modules,
-and returns a structured response. No business logic here.
-"""
-
+import asyncio
 import os
+import secrets
 import tempfile
+from pathlib import Path
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+import httpx
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, UploadFile
 
-from app.embedding.embedder import embed_query, embed_texts
-from app.generation.llm_client import generate_answer
+from app.config import settings
 from app.ingestion import ingest_arxiv_url, ingest_pdf, ingest_text_file, ingest_web_url
-from app.models import IngestResponse, QueryRequest, QueryResponse, SourceChunk, ChunkMetadata
-from app.retrieval.search import get_collection_info, search, upsert_chunks
+from app.models import ChunkMetadata, IngestResponse, QueryRequest, QueryResponse, SourceChunk
+from app.retrieval.search import get_collection_info
+from app.service import answer, store_chunks
 
 router = APIRouter()
+SUPPORTED_UPLOAD_SUFFIXES = {".pdf", ".txt", ".md"}
 
-DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "..", "data")
+
+async def require_api_key(x_api_key: str | None = Header(default=None)) -> None:
+    """Require X-API-Key only when APP_API_KEY is configured."""
+    if settings.app_api_key and (
+        not x_api_key or not secrets.compare_digest(x_api_key, settings.app_api_key)
+    ):
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
+
+
+async def _save_upload(file: UploadFile) -> tuple[str, str]:
+    filename = Path(file.filename or "upload").name
+    suffix = Path(filename).suffix.lower()
+    if suffix not in SUPPORTED_UPLOAD_SUFFIXES:
+        raise HTTPException(
+            status_code=415,
+            detail="Unsupported file type. Upload a PDF, TXT, or Markdown file.",
+        )
+
+    data_dir = Path(settings.data_dir).resolve()
+    data_dir.mkdir(parents=True, exist_ok=True)
+    size = 0
+    temp_path: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=data_dir, suffix=suffix, delete=False) as tmp:
+            temp_path = tmp.name
+            while block := await file.read(1024 * 1024):
+                size += len(block)
+                if size > settings.max_upload_bytes:
+                    raise HTTPException(status_code=413, detail="Uploaded file is too large")
+                tmp.write(block)
+    except Exception:
+        if temp_path and os.path.exists(temp_path):
+            os.unlink(temp_path)
+        raise
+
+    if size == 0:
+        assert temp_path is not None
+        os.unlink(temp_path)
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+    if suffix == ".pdf":
+        assert temp_path is not None
+        with open(temp_path, "rb") as uploaded:
+            if uploaded.read(5) != b"%PDF-":
+                os.unlink(temp_path)
+                raise HTTPException(status_code=400, detail="Uploaded file is not a valid PDF")
+    assert temp_path is not None
+    return temp_path, filename
 
 
 @router.get("/health")
 async def health_check():
-    return {"status": "healthy"}
+    try:
+        info = await asyncio.to_thread(get_collection_info)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Vector database is unavailable") from exc
+    return {"status": "healthy", "collection": info["name"], "points_count": info["points_count"]}
 
 
-@router.get("/stats")
+@router.get("/stats", dependencies=[Depends(require_api_key)])
 async def collection_stats():
-    """Return stats about the vector collection."""
-    return get_collection_info()
+    try:
+        return await asyncio.to_thread(get_collection_info)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Vector database is unavailable") from exc
 
 
-@router.post("/ingest", response_model=IngestResponse)
+@router.post("/ingest", response_model=IngestResponse, dependencies=[Depends(require_api_key)])
 async def ingest_document(
     file: UploadFile | None = File(None),
     arxiv_url: str | None = Form(None),
     url: str | None = Form(None),
 ):
-    """
-    Ingest a document into the knowledge base.
-
-    Accepts one of:
-    - A file upload (PDF, .txt, or .md)
-    - An ArXiv URL (arxiv_url field)
-    - A web page URL (url field)
-
-    Pipeline: load/fetch → chunk → embed → store in Qdrant
-    """
-    if not file and not arxiv_url and not url:
+    """Load, chunk, embed, and store exactly one document source."""
+    arxiv_url = arxiv_url.strip() if arxiv_url else None
+    url = url.strip() if url else None
+    source_count = sum(value is not None for value in (file, arxiv_url, url))
+    if source_count != 1:
         raise HTTPException(
             status_code=400,
-            detail="Provide a file upload, ArXiv URL, or web page URL",
+            detail="Provide exactly one file upload, ArXiv URL, or web page URL",
         )
 
+    temp_path: str | None = None
     try:
         if arxiv_url:
             chunks, filename = await ingest_arxiv_url(arxiv_url)
         elif url:
             chunks, filename = await ingest_web_url(url)
         else:
-            # Save uploaded file to disk temporarily
-            os.makedirs(DATA_DIR, exist_ok=True)
-            suffix = os.path.splitext(file.filename)[1] or ".pdf"
-            with tempfile.NamedTemporaryFile(dir=DATA_DIR, suffix=suffix, delete=False) as tmp:
-                content = await file.read()
-                tmp.write(content)
-                tmp_path = tmp.name
-            filename = file.filename
-
-            # Route to appropriate pipeline based on file type
-            if suffix.lower() in (".txt", ".md"):
-                chunks = await ingest_text_file(tmp_path, filename)
+            assert file is not None
+            temp_path, filename = await _save_upload(file)
+            suffix = Path(filename).suffix.lower()
+            if suffix in {".txt", ".md"}:
+                chunks = await ingest_text_file(temp_path, filename)
             else:
-                chunks = await ingest_pdf(tmp_path, filename)
-
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+                chunks = await ingest_pdf(temp_path, filename)
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail="Could not fetch the remote document") from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail="Could not process the uploaded document") from exc
+    finally:
+        if file is not None:
+            await file.close()
+        if temp_path and os.path.exists(temp_path):
+            os.unlink(temp_path)
 
     if not chunks:
-        raise HTTPException(status_code=422, detail="No text could be extracted from the document")
+        raise HTTPException(
+            status_code=422,
+            detail="No text could be extracted; scanned PDFs require OCR before ingestion",
+        )
 
-    # Embed all chunks
-    texts = [c["text"] for c in chunks]
-    vectors = embed_texts(texts)
-
-    # Store in Qdrant
-    upsert_chunks(chunks, vectors)
+    try:
+        stored = await store_chunks(chunks)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Could not store document chunks") from exc
 
     doc_id = chunks[0]["metadata"]["doc_id"]
-
     return IngestResponse(
         doc_id=doc_id,
         filename=filename,
-        num_chunks=len(chunks),
-        message=f"Successfully ingested {len(chunks)} chunks from {filename}",
+        num_chunks=stored,
+        message=f"Successfully ingested {stored} chunks from {filename}",
     )
 
 
-@router.post("/query", response_model=QueryResponse)
+@router.post("/query", response_model=QueryResponse, dependencies=[Depends(require_api_key)])
 async def query_knowledge_base(request: QueryRequest):
-    """
-    Query the knowledge base and get a cited answer.
-
-    Pipeline: embed question → search Qdrant → generate answer with Claude
-    """
-    # Embed the question
-    query_vector = embed_query(request.question)
-
-    # Retrieve top-k chunks
-    results = search(query_vector, top_k=request.top_k)
+    try:
+        generated, results = await answer(request.question, request.top_k)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="Answer generation failed") from exc
 
     if not results:
         return QueryResponse(
@@ -117,23 +163,12 @@ async def query_knowledge_base(request: QueryRequest):
             sources=[],
         )
 
-    # Generate cited answer
-    try:
-        answer = generate_answer(request.question, results)
-    except Exception as e:
-        raise HTTPException(
-            status_code=502,
-            detail=f"LLM generation failed: {str(e)}",
-        )
-
-    # Build response with source citations
     sources = [
         SourceChunk(
-            text=r["text"][:500],  # Truncate for response size
-            metadata=ChunkMetadata(**r["metadata"]),
-            score=r["score"],
+            text=result["text"][:500],
+            metadata=ChunkMetadata(**result["metadata"]),
+            score=result["score"],
         )
-        for r in results
+        for result in results
     ]
-
-    return QueryResponse(answer=answer, sources=sources)
+    return QueryResponse(answer=generated, sources=sources)

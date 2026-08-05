@@ -1,5 +1,5 @@
-import { useRef, useState } from "react";
-import { ingestArxivUrl, ingestPdf, ingestWebUrl, getStats } from "../api/client";
+import { useEffect, useRef, useState } from "react";
+import { ingestArxivUrl, ingestFile, ingestWebUrl, getStats } from "../api/client";
 import type { CollectionStats } from "../api/client";
 
 type Tab = "arxiv" | "web" | "file";
@@ -14,7 +14,9 @@ export default function IngestPanel() {
     type: "success" | "error";
   } | null>(null);
   const [stats, setStats] = useState<CollectionStats | null>(null);
+  const [dragActive, setDragActive] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const statsRequestedRef = useRef(false);
 
   async function refreshStats() {
     try {
@@ -24,6 +26,12 @@ export default function IngestPanel() {
       // Silently fail
     }
   }
+
+  useEffect(() => {
+    if (statsRequestedRef.current) return;
+    statsRequestedRef.current = true;
+    void refreshStats();
+  }, []);
 
   async function handleUrlSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -59,13 +67,12 @@ export default function IngestPanel() {
     }
   }
 
-  async function handleFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
+  async function uploadFile(file: File | undefined) {
     if (!file) return;
     setLoading(true);
     setMessage(null);
     try {
-      const res = await ingestPdf(file);
+      const res = await ingestFile(file);
       setMessage({ text: res.message, type: "success" });
       refreshStats();
     } catch (err) {
@@ -76,7 +83,9 @@ export default function IngestPanel() {
     }
   }
 
-  if (!stats) refreshStats();
+  function handleFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    void uploadFile(e.target.files?.[0]);
+  }
 
   const tabs: { key: Tab; label: string }[] = [
     { key: "arxiv", label: "ArXiv Paper" },
@@ -113,7 +122,7 @@ export default function IngestPanel() {
         {activeTab === "arxiv" && (
           <form onSubmit={handleUrlSubmit} className="space-y-3 animate-fade-in">
             <input
-              type="text"
+              type="url"
               value={url}
               onChange={(e) => setUrl(e.target.value)}
               placeholder="https://arxiv.org/abs/2301.08745"
@@ -141,7 +150,7 @@ export default function IngestPanel() {
         {activeTab === "web" && (
           <form onSubmit={handleWebUrlSubmit} className="space-y-3 animate-fade-in">
             <input
-              type="text"
+              type="url"
               value={webUrl}
               onChange={(e) => setWebUrl(e.target.value)}
               placeholder="https://en.wikipedia.org/wiki/..."
@@ -169,11 +178,21 @@ export default function IngestPanel() {
         {activeTab === "file" && (
           <div className="animate-fade-in">
             <label
+              onDragEnter={(event) => { event.preventDefault(); setDragActive(true); }}
+              onDragOver={(event) => event.preventDefault()}
+              onDragLeave={() => setDragActive(false)}
+              onDrop={(event) => {
+                event.preventDefault();
+                setDragActive(false);
+                if (!loading) void uploadFile(event.dataTransfer.files?.[0]);
+              }}
               className={`
                 flex flex-col items-center justify-center w-full h-44 border border-dashed rounded-lg cursor-pointer transition-colors
                 ${loading
                   ? "border-[#2a2a2a] bg-[#1a1a1a] cursor-not-allowed"
-                  : "border-[#444] hover:border-[#666] bg-[#1e1e1e]"
+                  : dragActive
+                    ? "border-[#aaa] bg-[#242424]"
+                    : "border-[#444] hover:border-[#666] bg-[#1e1e1e]"
                 }
               `}
             >

@@ -1,320 +1,228 @@
-"""
-MCP server for the RAG Knowledge Assistant.
-
-Exposes the RAG pipeline as tools that AI assistants (Claude Code, etc.)
-can call to query, search, and ingest documents into the knowledge base.
-
-Run:
-    python mcp_server.py                          # streamable-http on port 8811
-    python mcp_server.py --transport stdio        # stdio for local CLI usage
-"""
+"""MCP tools for querying and expanding the RAG knowledge base."""
 
 import argparse
-import sys
+import asyncio
+import logging
+import time
 
-from app.embedding.embedder import embed_query, embed_texts
-from app.generation.llm_client import generate_answer
+from mcp.server.fastmcp import FastMCP
+
+from app.config import settings
 from app.ingestion import ingest_arxiv_url, ingest_web_url
 from app.ingestion.arxiv_search import search_arxiv
 from app.ingestion.web_search import search_web
-from app.retrieval.search import ensure_collection, get_collection_info, search, upsert_chunks
+from app.retrieval.search import ensure_collection, get_collection_info
+from app.service import answer, retrieve, store_chunks
 
-# Parse args before creating FastMCP so host/port are available
-_parser = argparse.ArgumentParser(description="RAG Knowledge Assistant MCP Server")
-_parser.add_argument(
-    "--transport",
-    choices=["stdio", "streamable-http", "sse"],
-    default="streamable-http",
-    help="MCP transport protocol (default: streamable-http)",
-)
-_parser.add_argument("--port", type=int, default=8811, help="Port for HTTP transport (default: 8811)")
-_parser.add_argument("--host", default="0.0.0.0", help="Host to bind (default: 0.0.0.0)")
-_args = _parser.parse_args()
-
-# Ensure Qdrant collection exists on startup
-ensure_collection()
-
-from mcp.server.fastmcp import FastMCP
+logger = logging.getLogger(__name__)
 
 mcp = FastMCP(
     "RAG Knowledge Assistant",
     instructions="Query and manage a local RAG knowledge base of research papers and documents",
-    host=_args.host,
-    port=_args.port,
+    host=settings.mcp_host,
+    port=settings.mcp_port,
 )
 
 
+def _question(value: str) -> str:
+    value = value.strip()
+    if not value:
+        raise ValueError("question must not be blank")
+    if len(value) > 4_000:
+        raise ValueError("question must be at most 4000 characters")
+    return value
+
+
+def _bounded(value: int, name: str, maximum: int) -> int:
+    if not 1 <= value <= maximum:
+        raise ValueError(f"{name} must be between 1 and {maximum}")
+    return value
+
+
+def _sources(results: list[dict], include_page: bool = True) -> list[dict]:
+    sources = []
+    for result in results:
+        source = {
+            "text": result["text"][:500],
+            "source_file": result["metadata"]["source_file"],
+            "section_title": result["metadata"]["section_title"],
+            "score": round(result["score"], 3),
+        }
+        if include_page:
+            source["page_number"] = result["metadata"]["page_number"]
+        sources.append(source)
+    return sources
+
+
 @mcp.tool()
-def query_knowledge_base(question: str, top_k: int = 5) -> dict:
-    """Search the knowledge base and get a cited answer grounded in source documents.
-
-    Embeds the question, finds the most relevant document chunks via cosine
-    similarity in Qdrant, then generates an answer with [1],[2] source citations
-    using the configured LLM (OpenAI or Claude).
-
-    Costs ~$0.0005 per call (one LLM generation). Use search_chunks for free lookups.
-
-    Args:
-        question: The question to answer from the knowledge base
-        top_k: Number of source chunks to retrieve (default 5)
-    """
-    query_vector = embed_query(question)
-    results = search(query_vector, top_k=top_k)
-
+async def query_knowledge_base(question: str, top_k: int = 5) -> dict:
+    """Get a cited answer grounded in documents already in the knowledge base."""
+    question = _question(question)
+    top_k = _bounded(top_k, "top_k", 10)
+    generated, results = await answer(question, top_k)
     if not results:
         return {"answer": "No relevant sources found in the knowledge base.", "sources": []}
-
-    answer = generate_answer(question, results)
-    sources = [
-        {
-            "text": r["text"][:500],
-            "source_file": r["metadata"]["source_file"],
-            "page_number": r["metadata"]["page_number"],
-            "section_title": r["metadata"]["section_title"],
-            "score": round(r["score"], 3),
-        }
-        for r in results
-    ]
-    return {"answer": answer, "sources": sources}
+    return {"answer": generated, "sources": _sources(results)}
 
 
 @mcp.tool()
-def search_chunks(question: str, top_k: int = 5) -> dict:
-    """Search the knowledge base and return raw document chunks WITHOUT generating an answer.
-
-    Use this for quick lookups when you don't need an LLM-generated answer.
-    Returns the most relevant chunks with metadata and similarity scores.
-    Free — no LLM call, just embedding + vector search.
-
-    Args:
-        question: Search query
-        top_k: Number of chunks to return (default 5)
-    """
-    query_vector = embed_query(question)
-    results = search(query_vector, top_k=top_k)
-    return {
-        "chunks": [
-            {
-                "text": r["text"][:500],
-                "source_file": r["metadata"]["source_file"],
-                "page_number": r["metadata"]["page_number"],
-                "section_title": r["metadata"]["section_title"],
-                "score": round(r["score"], 3),
-            }
-            for r in results
-        ],
-        "count": len(results),
-    }
+async def search_chunks(question: str, top_k: int = 5) -> dict:
+    """Return relevant raw chunks without calling a generation model."""
+    question = _question(question)
+    top_k = _bounded(top_k, "top_k", 10)
+    results = await retrieve(question, top_k)
+    return {"chunks": _sources(results), "count": len(results)}
 
 
 @mcp.tool()
 async def research_papers(question: str, max_papers: int = 3, top_k: int = 5) -> dict:
-    """Search ArXiv for relevant academic papers, ingest them, and answer the question.
+    """Search ArXiv, ingest papers, and answer only from those papers."""
+    question = _question(question)
+    max_papers = _bounded(max_papers, "max_papers", 5)
+    top_k = _bounded(top_k, "top_k", 10)
 
-    This is the academic research tool. It:
-    1. Searches ArXiv's API for papers matching your question (free)
-    2. Downloads and ingests the top papers with section-aware chunking (free)
-    3. Queries the enriched knowledge base for a cited answer (~$0.0005)
-
-    Best for scientific, technical, and research questions. Papers are chunked
-    with academic-paper-optimized splitting (section detection, reference stripping).
-    Ingested papers persist in the knowledge base for future queries.
-
-    Args:
-        question: The research question to answer
-        max_papers: Number of ArXiv papers to search and ingest (default 3, max 5)
-        top_k: Number of source chunks to retrieve for the answer (default 5)
-    """
-    max_papers = min(max_papers, 5)
-
-    # Step 1: Search ArXiv
-    arxiv_results = await search_arxiv(question, max_results=max_papers)
-    if not arxiv_results:
+    papers = await search_arxiv(question, max_results=max_papers)
+    if not papers:
         return {"error": "No papers found on ArXiv for this query"}
 
-    # Step 2: Ingest each paper
-    ingested = []
-    for paper in arxiv_results:
+    ingested: list[dict] = []
+    failures: list[dict] = []
+    doc_ids: list[str] = []
+    for paper in papers:
         try:
-            chunks, filename = await ingest_arxiv_url(paper["url"])
-            if chunks:
-                vectors = embed_texts([c["text"] for c in chunks])
-                upsert_chunks(chunks, vectors)
-                ingested.append({
-                    "title": paper["title"],
-                    "arxiv_id": paper["arxiv_id"],
-                    "url": paper["url"],
-                    "authors": paper["authors"],
-                    "chunks": len(chunks),
-                })
-        except Exception:
-            continue
+            chunks, _ = await ingest_arxiv_url(paper["url"])
+            if not chunks:
+                raise ValueError("no text could be extracted")
+            count = await store_chunks(chunks)
+            doc_ids.append(chunks[0]["metadata"]["doc_id"])
+            ingested.append({
+                "title": paper["title"],
+                "arxiv_id": paper["arxiv_id"],
+                "url": paper["url"],
+                "authors": paper["authors"],
+                "chunks": count,
+            })
+        except Exception as exc:
+            logger.warning("Failed to ingest ArXiv result %s: %s", paper.get("url"), exc)
+            failures.append({"url": paper.get("url", ""), "error": type(exc).__name__})
 
     if not ingested:
-        return {"error": "Could not download or extract any of the found papers"}
+        return {"error": "Could not download or extract any found papers", "failures": failures}
 
-    # Step 3: Query the now-enriched knowledge base
-    query_vector = embed_query(question)
-    results = search(query_vector, top_k=top_k)
-
-    if not results:
-        return {
-            "answer": "Ingested papers but could not find relevant chunks for this specific question.",
-            "sources": [],
-            "papers_ingested": ingested,
-        }
-
-    answer = generate_answer(question, results)
-    sources = [
-        {
-            "text": r["text"][:500],
-            "source_file": r["metadata"]["source_file"],
-            "section_title": r["metadata"]["section_title"],
-            "score": round(r["score"], 3),
-        }
-        for r in results
-    ]
-
-    return {
-        "answer": answer,
-        "sources": sources,
+    generated, results = await answer(question, top_k, doc_ids)
+    response = {
+        "answer": generated or "Ingested papers but found no relevant chunks.",
+        "sources": _sources(results),
         "papers_ingested": ingested,
     }
+    if failures:
+        response["failures"] = failures
+    return response
 
 
 @mcp.tool()
 async def ingest_arxiv(url: str) -> dict:
-    """Ingest an ArXiv paper into the knowledge base.
-
-    Downloads the PDF, extracts text, chunks it with section awareness,
-    embeds the chunks locally (free), and stores them in Qdrant.
-
-    Args:
-        url: ArXiv URL (e.g. https://arxiv.org/abs/2301.08745 or https://arxiv.org/pdf/2301.08745)
-    """
-    chunks, filename = await ingest_arxiv_url(url)
+    """Ingest one ArXiv paper into the knowledge base."""
+    chunks, filename = await ingest_arxiv_url(url.strip())
     if not chunks:
         return {"error": "No text could be extracted from the paper"}
-
-    vectors = embed_texts([c["text"] for c in chunks])
-    upsert_chunks(chunks, vectors)
-
+    count = await store_chunks(chunks)
     return {
         "doc_id": chunks[0]["metadata"]["doc_id"],
         "filename": filename,
-        "num_chunks": len(chunks),
-        "message": f"Successfully ingested {len(chunks)} chunks from {filename}",
+        "num_chunks": count,
+        "message": f"Successfully ingested {count} chunks from {filename}",
     }
 
 
 @mcp.tool()
 async def ingest_web_page(url: str) -> dict:
-    """Ingest a web page into the knowledge base.
-
-    Fetches the URL, extracts the main text content (strips navigation,
-    ads, and boilerplate), chunks it, embeds locally (free), and stores
-    in Qdrant.
-
-    Args:
-        url: Any web page URL to ingest
-    """
-    chunks, source = await ingest_web_url(url)
+    """Ingest one public web page into the knowledge base."""
+    chunks, source = await ingest_web_url(url.strip())
     if not chunks:
         return {"error": "No text could be extracted from the web page"}
-
-    vectors = embed_texts([c["text"] for c in chunks])
-    upsert_chunks(chunks, vectors)
-
+    count = await store_chunks(chunks)
     return {
         "doc_id": chunks[0]["metadata"]["doc_id"],
         "source": source,
-        "num_chunks": len(chunks),
-        "message": f"Successfully ingested {len(chunks)} chunks from {url}",
+        "num_chunks": count,
+        "message": f"Successfully ingested {count} chunks from {source}",
     }
 
 
 @mcp.tool()
 async def research(question: str, max_pages: int = 3, top_k: int = 5) -> dict:
-    """Automatically search the web, ingest relevant pages, and answer a question.
+    """Search the web, ingest pages, and answer only from those pages."""
+    question = _question(question)
+    max_pages = _bounded(max_pages, "max_pages", 5)
+    top_k = _bounded(top_k, "top_k", 10)
 
-    This is the all-in-one research tool. It:
-    1. Searches DuckDuckGo for pages relevant to your question (free)
-    2. Ingests the top results into the knowledge base (free)
-    3. Queries the enriched knowledge base for a cited answer (~$0.0005)
-
-    Use this when the knowledge base might not have information on a topic yet.
-    The ingested pages persist, so future queries on the same topic are instant.
-
-    Args:
-        question: The research question to answer
-        max_pages: Number of web pages to search and ingest (default 3, max 5)
-        top_k: Number of source chunks to retrieve for the answer (default 5)
-    """
-    max_pages = min(max_pages, 5)
-
-    # Step 1: Search the web
-    web_results = search_web(question, max_results=max_pages)
+    web_results = await asyncio.to_thread(search_web, question, max_pages)
     if not web_results:
         return {"error": "No web results found for this query"}
 
-    # Step 2: Ingest each result
-    ingested = []
+    ingested: list[dict] = []
+    failures: list[dict] = []
+    doc_ids: list[str] = []
     for result in web_results:
-        url = result["url"]
         try:
-            chunks, source = await ingest_web_url(url)
-            if chunks:
-                vectors = embed_texts([c["text"] for c in chunks])
-                upsert_chunks(chunks, vectors)
-                ingested.append({
-                    "url": url,
-                    "title": result["title"],
-                    "chunks": len(chunks),
-                })
-        except Exception:
-            # Skip pages that fail to load — move on to the next
-            continue
+            chunks, _ = await ingest_web_url(result["url"])
+            if not chunks:
+                raise ValueError("no text could be extracted")
+            count = await store_chunks(chunks)
+            doc_ids.append(chunks[0]["metadata"]["doc_id"])
+            ingested.append({"url": result["url"], "title": result["title"], "chunks": count})
+        except Exception as exc:
+            logger.warning("Failed to ingest web result %s: %s", result.get("url"), exc)
+            failures.append({"url": result.get("url", ""), "error": type(exc).__name__})
 
     if not ingested:
-        return {"error": "Could not extract text from any of the search results"}
+        return {"error": "Could not extract text from any search result", "failures": failures}
 
-    # Step 3: Query the now-enriched knowledge base
-    query_vector = embed_query(question)
-    results = search(query_vector, top_k=top_k)
-
-    if not results:
-        return {
-            "answer": "Ingested pages but could not find relevant chunks for this specific question.",
-            "sources": [],
-            "ingested": ingested,
-        }
-
-    answer = generate_answer(question, results)
-    sources = [
-        {
-            "text": r["text"][:500],
-            "source_file": r["metadata"]["source_file"],
-            "section_title": r["metadata"]["section_title"],
-            "score": round(r["score"], 3),
-        }
-        for r in results
-    ]
-
-    return {
-        "answer": answer,
-        "sources": sources,
+    generated, results = await answer(question, top_k, doc_ids)
+    response = {
+        "answer": generated or "Ingested pages but found no relevant chunks.",
+        "sources": _sources(results, include_page=False),
         "ingested": ingested,
     }
+    if failures:
+        response["failures"] = failures
+    return response
 
 
 @mcp.tool()
-def get_stats() -> dict:
-    """Get statistics about the knowledge base.
+async def get_stats() -> dict:
+    """Return the collection name and total number of stored chunks."""
+    return await asyncio.to_thread(get_collection_info)
 
-    Returns the collection name and total number of document chunks stored.
-    """
-    return get_collection_info()
+
+def _wait_for_qdrant(attempts: int = 20) -> None:
+    for attempt in range(attempts):
+        try:
+            ensure_collection()
+            return
+        except Exception:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(1)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="RAG Knowledge Assistant MCP Server")
+    parser.add_argument(
+        "--transport",
+        choices=["stdio", "streamable-http", "sse"],
+        default="streamable-http",
+    )
+    parser.add_argument("--port", type=int, default=settings.mcp_port)
+    parser.add_argument("--host", default=settings.mcp_host)
+    args = parser.parse_args()
+
+    _wait_for_qdrant()
+    mcp.settings.host = args.host
+    mcp.settings.port = args.port
+    mcp.run(transport=args.transport)
 
 
 if __name__ == "__main__":
-    mcp.run(transport=_args.transport)
+    main()

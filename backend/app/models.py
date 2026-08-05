@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
 
 class ChunkMetadata(BaseModel):
@@ -9,10 +9,6 @@ class ChunkMetadata(BaseModel):
     doc_id: str
 
 
-class IngestRequest(BaseModel):
-    arxiv_url: str | None = None
-
-
 class IngestResponse(BaseModel):
     doc_id: str
     filename: str
@@ -21,8 +17,16 @@ class IngestResponse(BaseModel):
 
 
 class QueryRequest(BaseModel):
-    question: str
-    top_k: int = 5
+    question: str = Field(min_length=1, max_length=4_000)
+    top_k: int = Field(default=5, ge=1, le=10)
+
+    @field_validator("question")
+    @classmethod
+    def strip_question(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("question must not be blank")
+        return value
 
 
 class SourceChunk(BaseModel):

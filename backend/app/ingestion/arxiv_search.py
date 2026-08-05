@@ -26,6 +26,12 @@ async def search_arxiv(query: str, max_results: int = 3) -> list[dict]:
     Returns:
         List of {title, arxiv_id, url, abstract, authors} dicts.
     """
+    query = query.strip()
+    if not query:
+        raise ValueError("ArXiv query must not be blank")
+    if not 1 <= max_results <= 5:
+        raise ValueError("max_results must be between 1 and 5")
+
     params = {
         "search_query": f"all:{query}",
         "start": 0,
@@ -34,7 +40,8 @@ async def search_arxiv(query: str, max_results: int = 3) -> list[dict]:
         "sortOrder": "descending",
     }
 
-    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+    headers = {"User-Agent": "RAGKnowledgeAssistant/1.0 (contact: local-user)"}
+    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True, headers=headers) as client:
         response = await client.get(ARXIV_API_URL, params=params)
         response.raise_for_status()
 
