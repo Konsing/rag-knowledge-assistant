@@ -9,6 +9,13 @@ This guide deploys the personal, non-commercial showcase with services that curr
 
 OpenAI or Anthropic generation is not free. Use a dedicated project API key, set the smallest practical provider-side usage limits and alerts, and keep the demo's daily limit conservative. Confirm whether your provider's budget is a hard stop or only an alert. No provider promises that a free plan will exist forever; review their terms before each interview cycle.
 
+## Current deployment
+
+- Public showcase: [https://rag-knowledge-assistant-puce.vercel.app](https://rag-knowledge-assistant-puce.vercel.app/)
+- API health: [https://rag-showcase-api.onrender.com/api/health](https://rag-showcase-api.onrender.com/api/health)
+
+The public frontend URL is also configured as the GitHub repository homepage. The API can cold-start after inactivity; a temporary loading message during the first request is expected.
+
 ## What the public can do
 
 - List the curated documents.

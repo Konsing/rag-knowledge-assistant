@@ -6,6 +6,8 @@ The current implementation includes guarded public-URL ingestion, bounded upload
 
 It also includes an opt-in **public showcase mode**: visitors can browse a curated document library, select the papers used for retrieval, ask guarded anonymous questions, and inspect the ranked chunks, scores, citations, model, latency, and cache status behind each answer. In showcase mode, ingestion and corpus seeding remain administrator-only.
 
+**[Try the live RAG showcase](https://rag-knowledge-assistant-puce.vercel.app/)** — browse the indexed papers, inspect their stored chunks, choose a retrieval scope, and expand the trace behind each generated answer. The free Render backend sleeps when inactive, so the first connection can take roughly a minute to wake up.
+
 ## What It Does
 
 Upload documents — ArXiv papers, PDFs, web pages, or text files — and ask questions about them. The system retrieves relevant passages using vector similarity search and generates cited answers using an LLM (OpenAI or Claude, configurable).
